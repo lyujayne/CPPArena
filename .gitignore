@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual env
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 运行产物
+experiments/
+projects/
+*.log
+
+# 用户数据（KML、图片底图等）
+data/samples/*.kml
+!data/samples/示例农田.kml
+
+# 临时文件
+*.tmp
+*.bak
+~$*

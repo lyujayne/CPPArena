@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+  <name>示例农田（CPPBench 演示数据）</name>
+  <description>3 个地块（含 1 个凹多边形）与 1 个起飞点，用于验证 ACO-GTSP 三步法：凸分解 → 牛耕式内部路径 → ACO 优化访问顺序。</description>
+
+  <Placemark>
+    <name>地块A（凹多边形）</name>
+    <Polygon>
+      <outerBoundaryIs>
+        <LinearRing>
+          <coordinates>
+            123.400000,41.800000,0
+            123.404000,41.800000,0
+            123.404000,41.802000,0
+            123.402000,41.802000,0
+            123.402000,41.801000,0
+            123.400000,41.801000,0
+          </coordinates>
+        </LinearRing>
+      </outerBoundaryIs>
+    </Polygon>
+  </Placemark>
+
+  <Placemark>
+    <name>地块B</name>
+    <Polygon>
+      <outerBoundaryIs>
+        <LinearRing>
+          <coordinates>
+            123.406000,41.800000,0
+            123.410000,41.800000,0
+            123.410000,41.803000,0
+            123.406000,41.803000,0
+          </coordinates>
+        </LinearRing>
+      </outerBoundaryIs>
+    </Polygon>
+  </Placemark>
+
+  <Placemark>
+    <name>地块C</name>
+    <Polygon>
+      <outerBoundaryIs>
+        <LinearRing>
+          <coordinates>
+            123.400000,41.796000,0
+            123.404000,41.796000,0
+            123.404000,41.798000,0
+            123.400000,41.798000,0
+          </coordinates>
+        </LinearRing>
+      </outerBoundaryIs>
+    </Polygon>
+  </Placemark>
+
+  <Placemark>
+    <name>起飞点</name>
+    <Point>
+      <coordinates>123.405000,41.805000,0</coordinates>
+    </Point>
+  </Placemark>
+
+</Document>
+</kml>
