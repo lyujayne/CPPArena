@@ -103,16 +103,3 @@ class MyAlgorithm(BaseCPPAlgorithm):
 - Windows 10+，Python 3.10+
 - 依赖：PySide6 / Shapely / pyproj / Matplotlib / NumPy / Pandas / lxml / Pillow / requests
 
-## 引用
-
-```bibtex
-@article{kato2025uav,
-  title={A method for planning multirotor UAV flight paths to cover areas
-         using the Ant Colony Optimization metaheuristic},
-  author={Kato, et al.},
-  journal={Computers and Electronics in Agriculture},
-  volume={231},
-  pages={109983},
-  year={2025}
-}
-```
