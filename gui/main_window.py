@@ -219,6 +219,9 @@ class MainWindow(QMainWindow):
         g2v.addLayout(row3)
         self.decomp_check = QCheckBox("分解预览（凸子区域）")
         g2v.addWidget(self.decomp_check)
+        self.suborder_check = QCheckBox("显示子区域访问顺序")
+        self.suborder_check.setChecked(True)
+        g2v.addWidget(self.suborder_check)
         v.addWidget(g2, 1)
 
         self.data_info = QLabel("请导入 KML 或图片底图，\n"
@@ -260,6 +263,7 @@ class MainWindow(QMainWindow):
                                   lambda: self.run_experiment("batch")))
         m_exp.addSeparator()
         m_exp.addAction(self._act("终止当前实验(&T)", self.runner.cancel))
+        m_exp.addAction(self._act("清除实验结果(&C)", self._clear_results, "F5"))
         m_exp.addAction(self._act("恢复默认参数(&D)", self._reset_all_params))
 
         m_tool = mb.addMenu("工具(&T)")
@@ -283,6 +287,7 @@ class MainWindow(QMainWindow):
         tb.addAction(self._act("▶ 运行选中算法", lambda: self.run_experiment("single")))
         tb.addAction(self._act("▶▶ 批量比较", lambda: self.run_experiment("batch")))
         tb.addSeparator()
+        tb.addAction(self._act("🧹 清除结果", self._clear_results))
         tb.addAction(self._act("导出图表", self.compare_panel.export_figure))
         tb.addAction(self._act("保存工程", self._save_project))
 
@@ -309,6 +314,8 @@ class MainWindow(QMainWindow):
         self.btn_launch.clicked.connect(self.canvas.start_set_launch)
         self.btn_cancel_draw.clicked.connect(self.canvas.cancel_draw)
         self.decomp_check.toggled.connect(self.canvas.set_decomposed)
+        self.suborder_check.toggled.connect(
+            lambda on: self.canvas.set_layer("suborder", on))
         self.region_list.itemSelectionChanged.connect(self._on_region_selected)
 
         self.canvas.polygon_drawn.connect(self._on_polygon_drawn)
@@ -356,7 +363,8 @@ class MainWindow(QMainWindow):
         self._set_active_dataset(ds)
         self.statusBar().showMessage(
             f"已导入 KML：{os.path.basename(path)}"
-            f"（{len(ds.regions)} 个区域，EPSG:{ds.epsg}）", 6000)
+            f"（{len(ds.regions)} 个区域，EPSG:{ds.epsg}）；"
+            f"请点击 ▲ 标记起飞点", 8000)
 
     def _import_image(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -695,6 +703,17 @@ class MainWindow(QMainWindow):
         self.runner.cancel()
         self.sb_stage.setText("正在终止…")
         self.statusBar().showMessage("已请求终止，正在停止当前任务…", 4000)
+
+    def _clear_results(self):
+        """清除本次实验产生的所有结果显示（画布路径叠加、右侧面板、比较面板），
+        保留数据集、多边形、起飞点与卫星底图。"""
+        self.results = {}
+        self.canvas.set_results({})
+        self.result_panel.clear()
+        self.compare_panel.clear()
+        self._update_status("结果已清除")
+        self.statusBar().showMessage(
+            "已清除实验结果（数据集、多边形、起飞点与底图保留）", 4000)
 
     # ================================================================ 视图
     def _toggle_decomposed(self, on: bool):

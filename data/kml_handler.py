@@ -28,11 +28,12 @@ def _parse_coords(text: str) -> List[Tuple[float, float, float]]:
 
 
 def parse_kml(path: str):
-    """解析 KML 文件。
+    """解析 KML 文件，仅提取多边形地块（作为地图导入）。
 
-    :return: (regions, launch_point)
-        regions: [(name, [(lon,lat), ...])]  多边形地标
-        launch_point: (lon, lat) 或 None（取第一个点地标）
+    KML 中的 Point 地标不再被识别为起飞点；起飞点由用户在画布上
+    手动标记。这样可避免 Point 与 Polygon 跨地区时把 UTM 带选错。
+
+    :return: regions: [(name, [(lon,lat), ...])]  多边形地标
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"文件不存在: {path}")
@@ -40,7 +41,6 @@ def parse_kml(path: str):
     root = tree.getroot()
 
     regions = []
-    launch_point = None
 
     for pm in root.findall(".//kml:Placemark", NS):
         name_el = pm.find("kml:name", NS)
@@ -56,15 +56,9 @@ def parse_kml(path: str):
                     regions.append((name or f"区域{len(regions) + 1}",
                                     [(c[0], c[1]) for c in coords]))
 
-        pt = pm.find(".//kml:Point/kml:coordinates", NS)
-        if pt is not None and pt.text and launch_point is None:
-            coords = _parse_coords(pt.text)
-            if coords:
-                launch_point = (coords[0][0], coords[0][1])
-
     if not regions:
         raise ValueError("KML 中未找到多边形地标（Polygon Placemark）")
-    return regions, launch_point
+    return regions
 
 
 def write_waypoints_kml(waypoints_lonlat_alt: List[Tuple[float, float, float]],

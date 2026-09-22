@@ -141,6 +141,19 @@ class ComparePanel(QWidget):
         self.rebuild()
         self._set_enabled(self.ds_combo.count() > 0)
 
+    def clear(self):
+        """清空所有比较结果、表格与图表（保留 UI 框架与当前数据集）。"""
+        self._results = {}
+        self._datasets = {}
+        self._camera = {}
+        self._baseline = None
+        self.ds_combo.blockSignals(True)
+        self.ds_combo.clear()
+        self.ds_combo.blockSignals(False)
+        self.wp_algo_combo.clear()
+        self.rebuild()
+        self._set_enabled(False)
+
     def _set_enabled(self, on: bool):
         for w in (self.btn_latex, self.btn_csv, self.btn_json, self.btn_report,
                   self.btn_fig, self.btn_wp, self.ds_combo, self.wp_algo_combo):

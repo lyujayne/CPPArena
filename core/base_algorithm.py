@@ -84,6 +84,8 @@ class CPPResult:
     total_turns: int                        # 总转弯次数
     region_order: List[int]                 # 区域访问顺序（区域 id 序列）
     internal_paths: List[List[XY]]          # 各区域内部路径
+    subregion_sequence: List[dict] = field(default_factory=list)
+    #   分解后子区访问顺序：[{"order": int, "polygon": [[x,y],...]}]
     convergence: List[float] = field(default_factory=list)   # 迭代轮次→最优值
     runtime: float = 0.0                    # 运行耗时 (s)
     seed: int = 0                           # 随机种子
@@ -97,6 +99,7 @@ class CPPResult:
             "total_turns": self.total_turns,
             "region_order": self.region_order,
             "internal_paths": self.internal_paths,
+            "subregion_sequence": self.subregion_sequence,
             "convergence": [round(c, 3) for c in self.convergence],
             "runtime": round(self.runtime, 4),
             "seed": self.seed,
@@ -113,6 +116,7 @@ class CPPResult:
             region_order=[int(i) for i in d["region_order"]],
             internal_paths=[[(float(x), float(y)) for x, y in p]
                             for p in d.get("internal_paths", [])],
+            subregion_sequence=d.get("subregion_sequence", []),
             convergence=[float(c) for c in d.get("convergence", [])],
             runtime=float(d.get("runtime", 0.0)),
             seed=int(d.get("seed", 0)),

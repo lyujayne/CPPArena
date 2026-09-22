@@ -130,6 +130,7 @@ class ExperimentRunner:
         run_dict["waypoints"] = result.waypoints
         run_dict["region_order"] = result.region_order
         run_dict["internal_paths"] = result.internal_paths
+        run_dict["subregion_sequence"] = result.subregion_sequence
         run_dict["metadata"] = result.metadata
         run_dict["params"] = {k: v for k, v in job.params.items() if k != "seed"}
         return run_dict

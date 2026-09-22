@@ -51,14 +51,16 @@ def _polygon_height(pts: List[XY], edge_dir) -> float:
 
 
 def choose_sweep_direction(pts: List[XY]) -> np.ndarray:
-    """选择最优飞行方向：最大高度对应边的方向（论文方法）。
+    """选择最优飞行方向（论文 Algorithm 1 / subproblem 2）。
 
-    对每条边计算垂直于该边的多边形高度，取高度最大的那条边，
-    飞行方向平行于该边。
+    对每条边计算顶点到该边的最大距离（=多边形在垂直于该边方向的
+    投影高度），取该距离**最小**的那条边。这条边沿多边形最长轴，
+    飞行方向平行于它，使牛耕扫描线数量最少、内部转弯次数最少
+    （与 Fig.6 矩形沿长边横扫一致）。
     """
     n = len(pts)
     best_dir = np.array([1.0, 0.0])
-    best_h = -1.0
+    best_h = float("inf")
     for i in range(n):
         a = np.array(pts[i])
         b = np.array(pts[(i + 1) % n])
@@ -66,7 +68,7 @@ def choose_sweep_direction(pts: List[XY]) -> np.ndarray:
         if np.hypot(*edge) < 1e-12:
             continue
         h = _polygon_height(pts, edge)
-        if h > best_h:
+        if h < best_h:
             best_h = h
             best_dir = _unit(edge)
     return best_dir

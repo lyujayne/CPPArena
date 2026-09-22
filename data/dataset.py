@@ -64,26 +64,22 @@ class Dataset:
 
     # ---------------- KML 导入 ----------------
     def load_kml(self, kml_path: str):
-        """导入 KML：多边形 → 区域，点地标 → 起飞点（WGS84 → UTM）。
+        """导入 KML：仅把多边形当作地块/地图导入，WGS84 → UTM。
 
-        纯地形 KML（无 Point 地标）时，起飞点默认取第一个地块的质心，
-        避免 (0,0) 原点导致跨洲飞行。
+        KML 中的 Point 地标不再被识别为起飞点；起飞点由用户在画布上
+        手动标记（"▲ 标记起飞点"）。UTM 带按多边形自身位置选择，
+        避免 Point 与 Polygon 跨地区时投影带选错。
         """
-        regions_ll, launch_ll = parse_kml(kml_path)
+        regions_ll = parse_kml(kml_path)
         if not regions_ll:
             raise ValueError("KML 中未找到多边形地标")
-        first_pt = regions_ll[0][1][0]
-        lon0, lat0 = first_pt[0], first_pt[1]
-        if launch_ll:
-            lon0, lat0 = launch_ll
+        lon0, lat0 = regions_ll[0][1][0]
         tf = CoordTransform(lon=lon0, lat=lat0)
         self.epsg = tf.epsg
         self.regions.clear()
         self._next_region_id = 0
         for name, pts_ll in regions_ll:
             self.add_region(name, tf.points_lonlat_to_utm(pts_ll))
-        if launch_ll:
-            self.launch_point = tf.lonlat_to_utm(*launch_ll)
         return tf
 
     def launch_lonlat(self, tf: CoordTransform) -> Optional[Tuple[float, float]]:

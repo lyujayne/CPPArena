@@ -41,8 +41,10 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
         subregion_plans: dict = {}   # region_id -> list[list[RegionCoverPlan]]
         subregion_counts = {}
         decomp_info = []
+        region_convex_polys = {}
         for region in cpp_input.regions:
             convex_parts = convex_decompose(region.vertices)
+            region_convex_polys[region.id] = convex_parts
             plans_by_sub = []
             for sub_idx, sub_pts in enumerate(convex_parts):
                 variants = plan_region_variants(sub_pts, line_spacing)
@@ -60,8 +62,10 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
                                 internal_distance=0.0, path=[])]
         sub_id_counter = 1
         node_by_sub: dict = {}
+        subregion_polys: dict = {}
         for region in cpp_input.regions:
-            for variants in subregion_plans[region.id]:
+            for sub_idx, variants in enumerate(subregion_plans[region.id]):
+                subregion_polys[sub_id_counter] = region_convex_polys[region.id][sub_idx]
                 for v in variants:
                     nd = GTSPNode(index=len(nodes), region_id=region.id,
                                   subregion_id=sub_id_counter,
@@ -78,14 +82,23 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
         # ---- 组装全局结果 ----
         region_order = []
         internal_paths = []
+        subregion_sequence = []
         chosen_variants = {}
         waypoints = [launch]
+        seq_order = 0
         for nd_idx in visit:
             nd = nodes[nd_idx]
             if nd.region_id < 0:
                 continue
             region_order.append(nd.region_id)
             internal_paths.append(nd.path)
+            seq_order += 1
+            poly = subregion_polys.get(nd.subregion_id)
+            if poly is not None:
+                subregion_sequence.append({
+                    "order": seq_order,
+                    "polygon": [[float(x), float(y)] for x, y in poly],
+                })
             chosen_variants.setdefault(nd.region_id, []).append(nd.subregion_id)
             if waypoints and waypoints[-1] != nd.path[0]:
                 waypoints.append(nd.path[0])
@@ -117,6 +130,7 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
             total_turns=int(total_turns),
             region_order=region_order,
             internal_paths=internal_paths,
+            subregion_sequence=subregion_sequence,
             convergence=convergence,
             runtime=runtime,
             seed=seed,

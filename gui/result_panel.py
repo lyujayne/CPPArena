@@ -35,7 +35,6 @@ class ResultPanel(QWidget):
         form.addRow("总飞行距离 (m)", self.lbl_dist)
         form.addRow("总转弯次数", self.lbl_turns)
         form.addRow("运行耗时 (s)", self.lbl_runtime)
-        form.addRow("区域访问顺序", self.lbl_order)
         v.addWidget(g)
 
         g2 = QGroupBox("算法细节（metadata）")

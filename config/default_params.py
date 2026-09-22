@@ -10,7 +10,7 @@ ACO 参数严格对齐基准论文：
 import os
 
 APP_NAME = "CPPBench"
-APP_VERSION = "2.0.0"
+APP_VERSION = "1.1.0"
 
 # 项目根目录（cppbench/）
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

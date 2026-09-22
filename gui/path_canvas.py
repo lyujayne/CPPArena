@@ -49,9 +49,11 @@ class PathCanvas(QWidget):
 
         self._dataset: Optional[Dataset] = None
         self._results: Dict[str, dict] = {}      # algo -> run dict
+        self._reset_view = True                  # 新数据集时重新自适应视图
         self._decomposed = False
         self._layers = {"regions": True, "subregions": True, "internal": True,
-                        "transitions": True, "launch": True, "image": True}
+                        "transitions": True, "launch": True, "image": True,
+                        "suborder": True}
 
         # 交互状态
         self._draw_mode = None        # None | "polygon" | "launch"
@@ -67,6 +69,7 @@ class PathCanvas(QWidget):
     def set_dataset(self, dataset: Optional[Dataset], decomposed: bool = False):
         self._dataset = dataset
         self._decomposed = decomposed
+        self._reset_view = True
         self.redraw()
 
     def set_results(self, results: Dict[str, dict]):
@@ -124,6 +127,7 @@ class PathCanvas(QWidget):
             self._temp_artist = None
 
     def redraw(self):
+        preserve_lim = (self.ax.get_xlim(), self.ax.get_ylim())
         self.ax.clear()
         self._temp_artist = None
         ds = self._dataset
@@ -198,9 +202,27 @@ class PathCanvas(QWidget):
                     p = np.asarray(path, dtype=float)
                     self.ax.plot(p[:, 0], p[:, 1], ls, color=color, linewidth=0.7,
                                  alpha=0.55, zorder=3)
+            if self._layers.get("suborder"):
+                for seq in run.get("subregion_sequence", []):
+                    poly = seq.get("polygon") or []
+                    if len(poly) < 3:
+                        continue
+                    cxx = sum(q[0] for q in poly) / len(poly)
+                    cyy = sum(q[1] for q in poly) / len(poly)
+                    self.ax.text(cxx, cyy, str(seq.get("order", "")),
+                                 fontsize=11, fontweight="bold", color="#1f3b99",
+                                 ha="center", va="center", zorder=8,
+                                 bbox=dict(boxstyle="circle,pad=0.25",
+                                           facecolor="white", edgecolor="#1f3b99",
+                                           lw=1.2))
 
         self.ax.set_aspect("equal", adjustable="datalim")
-        self.ax.autoscale()
+        if self._reset_view:
+            self.ax.autoscale()
+            self._reset_view = False
+        else:
+            self.ax.set_xlim(preserve_lim[0])
+            self.ax.set_ylim(preserve_lim[1])
         if self.ax.get_legend_handles_labels()[0]:
             self.ax.legend(loc="upper right", fontsize=8)
         self.ax.set_xlabel("东向 (m)")
