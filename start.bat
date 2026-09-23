@@ -17,14 +17,14 @@ if not defined PY (
     exit /b 1
 )
 
-echo [CPPBench] Python: %PY%
+echo [CPP Arena] Python: %PY%
 
 "%PY%" -c "import PySide6, shapely, pyproj, matplotlib, numpy, pandas, lxml" >nul 2>nul
 if errorlevel 1 (
-    echo [CPPBench] 正在安装依赖，请稍候...
+    echo [CPP Arena] 正在安装依赖，请稍候...
     "%PY%" -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
     if errorlevel 1 (
-        echo [CPPBench] 清华镜像不可用，改用官方 PyPI...
+        echo [CPP Arena] 清华镜像不可用，改用官方 PyPI...
         "%PY%" -m pip install -r requirements.txt
     )
     "%PY%" -c "import PySide6, shapely, pyproj, matplotlib, numpy, pandas, lxml" >nul 2>nul
@@ -36,7 +36,7 @@ if errorlevel 1 (
     )
 )
 
-echo [CPPBench] 正在启动 CPPBench...
+echo [CPP Arena] 正在启动 CPP Arena...
 "%PY%" main.py
 if errorlevel 1 (
     echo.

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
-  <name>示例农田（CPPBench 演示数据）</name>
+  <name>示例农田（CPP Arena 演示数据）</name>
   <description>3 个地块（含 1 个凹多边形）与 1 个起飞点，用于验证 ACO-GTSP 三步法：凸分解 → 牛耕式内部路径 → ACO 优化访问顺序。</description>
 
   <Placemark>

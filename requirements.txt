@@ -1,4 +1,4 @@
-# CPPBench 依赖（Python 3.8+，推荐 3.10+）
+# CPP Arena 依赖（Python 3.8+，推荐 3.10+）
 # GUI
 PySide6>=6.5
 # 几何计算 / 坐标转换

@@ -15,7 +15,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolb
 from matplotlib.figure import Figure
 from matplotlib.patches import Polygon as MplPolygon
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QWidget, QVBoxLayout
+from PySide6.QtWidgets import QHBoxLayout, QWidget, QVBoxLayout
 
 from algorithms.aco.polygon_decomp import convex_decompose
 from data.dataset import Dataset
@@ -40,10 +40,18 @@ class PathCanvas(QWidget):
         self.figure = Figure(figsize=(8, 7), dpi=100)
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
+        # 移除 Back/Forward（左右箭头），界面更简洁
+        for _act in list(self.toolbar.actions()):
+            if _act.text().lower() in ("back", "forward"):
+                self.toolbar.removeAction(_act)
+        self._toolbar_row = QHBoxLayout()
+        self._toolbar_row.setContentsMargins(0, 0, 0, 0)
+        self._toolbar_row.addWidget(self.toolbar)
+        self._toolbar_row.addSpacing(16)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.toolbar)
+        layout.addLayout(self._toolbar_row)
         layout.addWidget(self.canvas)
         self.ax = self.figure.add_subplot(111)
 
@@ -75,6 +83,11 @@ class PathCanvas(QWidget):
     def set_results(self, results: Dict[str, dict]):
         self._results = dict(results or {})
         self.redraw()
+
+    def add_toolbar_extra(self, widget):
+        """把额外控件（如显示选项复选框）追加到画布工具栏右侧。"""
+        self._toolbar_row.addWidget(widget)
+        self._toolbar_row.addSpacing(8)
 
     def set_decomposed(self, on: bool):
         self._decomposed = bool(on)

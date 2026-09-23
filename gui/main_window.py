@@ -110,7 +110,7 @@ class _CalibDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    """CPPBench 主窗口。"""
+    """CPP Arena 主窗口。"""
 
     def __init__(self):
         super().__init__()
@@ -160,6 +160,12 @@ class MainWindow(QMainWindow):
 
         # ---- 中央画布 ----
         self.canvas = PathCanvas()
+        # 显示选项复选框：放在画布工具栏右侧（替代原来左侧面板的位置）
+        self.decomp_check = QCheckBox("分解预览（凸子区域）")
+        self.suborder_check = QCheckBox("显示子区域访问顺序")
+        self.suborder_check.setChecked(True)
+        self.canvas.add_toolbar_extra(self.decomp_check)
+        self.canvas.add_toolbar_extra(self.suborder_check)
 
         # ---- 右侧结果面板 ----
         self.right_tabs = QTabWidget()
@@ -193,8 +199,6 @@ class MainWindow(QMainWindow):
         row.addWidget(self.btn_import_img)
         row.addWidget(self.btn_sat)
         gv.addLayout(row)
-        self.btn_new_ds = QPushButton("新建空数据集（手动勾绘）")
-        gv.addWidget(self.btn_new_ds)
         v.addWidget(g)
 
         g2 = QGroupBox("区域列表（勾选/删除/重命名）")
@@ -207,21 +211,18 @@ class MainWindow(QMainWindow):
         row2.addWidget(self.btn_del_region)
         row2.addWidget(self.btn_rename_region)
         g2v.addLayout(row2)
-        row3 = QHBoxLayout()
         self.btn_draw = QPushButton("✏ 勾绘地块")
         self.btn_launch = QPushButton("▲ 标记起飞点")
         self.btn_finish = QPushButton("✓ 完成勾绘")
         self.btn_cancel_draw = QPushButton("取消绘制")
-        row3.addWidget(self.btn_draw)
-        row3.addWidget(self.btn_launch)
-        row3.addWidget(self.btn_finish)
-        row3.addWidget(self.btn_cancel_draw)
-        g2v.addLayout(row3)
-        self.decomp_check = QCheckBox("分解预览（凸子区域）")
-        g2v.addWidget(self.decomp_check)
-        self.suborder_check = QCheckBox("显示子区域访问顺序")
-        self.suborder_check.setChecked(True)
-        g2v.addWidget(self.suborder_check)
+        row3a = QHBoxLayout()
+        row3a.addWidget(self.btn_draw)
+        row3a.addWidget(self.btn_launch)
+        row3b = QHBoxLayout()
+        row3b.addWidget(self.btn_finish)
+        row3b.addWidget(self.btn_cancel_draw)
+        g2v.addLayout(row3a)
+        g2v.addLayout(row3b)
         v.addWidget(g2, 1)
 
         self.data_info = QLabel("请导入 KML 或图片底图，\n"
@@ -281,9 +282,6 @@ class MainWindow(QMainWindow):
         tb = self.addToolBar("主工具栏")
         tb.setMovable(False)
         tb.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        tb.addAction(self._act("导入 KML", self._import_kml))
-        tb.addAction(self._act("导入图片", self._import_image))
-        tb.addSeparator()
         tb.addAction(self._act("▶ 运行选中算法", lambda: self.run_experiment("single")))
         tb.addAction(self._act("▶▶ 批量比较", lambda: self.run_experiment("batch")))
         tb.addSeparator()
@@ -306,7 +304,6 @@ class MainWindow(QMainWindow):
         self.btn_import_kml.clicked.connect(self._import_kml)
         self.btn_import_img.clicked.connect(self._import_image)
         self.btn_sat.clicked.connect(self._load_satellite)
-        self.btn_new_ds.clicked.connect(self._new_dataset)
         self.btn_del_region.clicked.connect(self._delete_region)
         self.btn_rename_region.clicked.connect(self._rename_region)
         self.btn_draw.clicked.connect(self.canvas.start_draw_polygon)

@@ -108,7 +108,7 @@ class AlgorithmRegistry:
             for fn in sorted(os.listdir(d)):
                 if not fn.endswith(".py") or fn.startswith("_"):
                     continue
-                mod_name = f"_cppbench_plugin_{os.path.splitext(fn)[0]}"
+                mod_name = f"_cpp_arena_plugin_{os.path.splitext(fn)[0]}"
                 try:
                     spec = importlib.util.spec_from_file_location(
                         mod_name, os.path.join(d, fn))

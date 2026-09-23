@@ -19,7 +19,7 @@ Agriculture 231:109983 的三步法：
 也可手动运行：
 
 ```bash
-cd "CPP _Arena_v1.0"
+cd "CPP _Arena_v1.2"
 python main.py
 ```
 
@@ -49,7 +49,7 @@ python main.py
 ## 目录结构
 
 ```
-CPP _Arena_v1.0/
+CPP _Arena_v1.2/
 ├── main.py                     # 程序入口
 ├── start.bat                   # 一键启动
 ├── requirements.txt

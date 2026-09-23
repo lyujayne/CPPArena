@@ -9,10 +9,10 @@ ACO 参数严格对齐基准论文：
 
 import os
 
-APP_NAME = "CPPBench"
-APP_VERSION = "1.1.0"
+APP_NAME = "CPP Arena"
+APP_VERSION = "1.2"
 
-# 项目根目录（cppbench/）
+# 项目根目录（cpp_arena/）
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXPERIMENT_DIR = os.path.join(BASE_DIR, "experiments")
 PLUGIN_DIR = os.path.join(BASE_DIR, "algorithms", "plugins")
@@ -108,19 +108,19 @@ ALGORITHM_META = {
         "params_note": "α=0.5, β=20, ρ=0.7, Q=1 为论文穷举最优组合。",
     },
     "贪心最近邻": {
-        "author": "CPPBench 内置基线",
+        "author": "CPP Arena 内置基线",
         "citation": "本平台实现",
         "scope": "确定性对照算法：每次选择距离当前位置最近的未访问区域。",
         "params_note": "无算法参数，使用全局相机参数。",
     },
     "导入顺序": {
-        "author": "CPPBench 内置基线",
+        "author": "CPP Arena 内置基线",
         "citation": "本平台实现；等价 Mission Planner 按导入顺序访问",
         "scope": "确定性对照算法：按用户导入区域顺序依次访问，作为论文对照基线。",
         "params_note": "无算法参数，使用全局相机参数。",
     },
     "水平扫描 (插件示例)": {
-        "author": "CPPBench 插件示例",
+        "author": "CPP Arena 插件示例",
         "citation": "本平台示例插件",
         "scope": "演示插件机制的扩展算法：固定水平方向做牛耕扫描（不按最优方向）。",
         "params_note": "无算法参数，使用全局相机参数。",
