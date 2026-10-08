@@ -1,16 +1,22 @@
 # -*- coding: utf-8 -*-
 """全局默认参数。
 
-ACO 参数严格对齐基准论文：
+ACO 核心四参数对齐基准论文：
 《A method for planning multirotor UAV flight paths to cover areas using
  the Ant Colony Optimization metaheuristic》
-（α=0.5, β=20, ρ=0.7, Q=1, 最大迭代 500, 蚂蚁数=节点总数）
+（α=0.5, β=20, ρ=0.7, Q=1, 最大迭代 500, 蚂蚁数=节点总数）。
+此外按论文 §3.4 提到的“随机因子（random factor）”与 Algorithm 2 的
+ANT-cycle 流程，补齐了前期探索→后期利用相关参数：exploration_prob
+（初始探索率，随迭代余弦衰减到 0）、rcl_ratio（GRASP 受限候选池占比）、
+elite_weight / elite_delay（全局最优精英沉积强度与启用时机）、tau0
+（<=0 时自动取 Q/L_nn）。这些参数用于消除 β=20 下第 0 代即早熟锁死、
+收敛曲线呈水平线的问题。
 """
 
 import os
 
 APP_NAME = "CPP Arena"
-APP_VERSION = "1.2"
+APP_VERSION = "1.2.1"
 
 # 项目根目录（cpp_arena/）
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -78,13 +84,17 @@ def compute_camera(cam):
 # ---------------------------------------------------------------- 算法默认参数
 ALGORITHM_DEFAULTS = {
     "ACO-GTSP": {
-        "alpha": 0.5,            # 信息素权重 α
-        "beta": 20.0,            # 距离权重 β
-        "rho": 0.7,              # 信息素挥发率 ρ
-        "Q": 1.0,                # 信息素沉积量 Q
-        "max_iterations": 500,   # 最大迭代次数
-        "exploration_prob": 0.0, # 随机探索概率（论文最优为 0）
-        "tau0": 1.0,             # 信息素初值
+        "alpha": 0.5,            # 信息素权重 α（论文）
+        "beta": 20.0,            # 距离权重 β（论文）
+        "rho": 0.7,              # 信息素挥发率 ρ（论文）
+        "Q": 1.0,                # 信息素沉积量 Q（论文）
+        "max_iterations": 500,   # 最大迭代次数（论文）
+        # 以下为论文“随机因子”+ ANT-cycle 探索-利用机制的实现参数
+        "exploration_prob": 0.5, # 初始随机探索率（随迭代余弦衰减到 0；0=关闭，会早熟锁死）
+        "rcl_ratio": 0.2,        # GRASP 受限候选池占比（探索时只在最近的该比例候选中随机）
+        "elite_weight": 25.0,    # 全局最优路径的精英信息素沉积权重（0=不强化最优）
+        "elite_delay": 0.2,      # 精英沉积在该迭代占比之后才线性启用（先探索后强化）
+        "tau0": 0.0,             # 信息素初值（<=0 自动取 Q/最近邻路径长度，量纲自适应）
         "seed": 42,
     },
     "贪心最近邻": {
@@ -105,7 +115,10 @@ ALGORITHM_META = {
         "citation": "（请填入基准论文引用）",
         "scope": "元启发式；适用于平坦无障碍农田区域的多边形覆盖路径规划。"
                  "三步法：凸分解 → 牛耕式内部路径 → ACO 求解 E-GTSP 访问顺序。",
-        "params_note": "α=0.5, β=20, ρ=0.7, Q=1 为论文穷举最优组合。",
+        "params_note": ("α=0.5, β=20, ρ=0.7, Q=1 为论文穷举最优组合；另按论文随机因子与 "
+                        "ANT-cycle 流程默认开启前期探索(exploration_prob=0.5，余弦衰减)、"
+                        "RCL 受限候选(rcl_ratio=0.2)与全局最优精英沉积(elite_weight=25)，"
+                        "避免 β=20 下第 0 代早熟、收敛曲线水平。"),
     },
     "贪心最近邻": {
         "author": "CPP Arena 内置基线",

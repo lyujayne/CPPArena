@@ -122,7 +122,9 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
             "gtsp": stats,
             "chosen_subregions_per_region": {
                 str(k): v for k, v in chosen_variants.items()},
-            "note": "α=0.5, β=20, ρ=0.7, Q=1 为论文穷举最优参数组合",
+            "note": ("α=0.5, β=20, ρ=0.7, Q=1 为论文穷举最优参数组合；"
+                     "已按论文随机因子与 ANT-cycle 流程开启前期探索(RCL)、"
+                     "余弦衰减与全局最优精英沉积，并以最近邻贪心解兜底。"),
         }
         return CPPResult(
             waypoints=waypoints,
@@ -137,6 +139,23 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
             algorithm_name=self.name,
             metadata=metadata,
         )
+
+    def get_param_spec(self):
+        """参数面板中文标签与顺序（key, 中文标签, 类型, 默认值）。"""
+        d = self.default_params
+        return [
+            ("alpha", "信息素权重 α", "float", float(d["alpha"])),
+            ("beta", "距离权重 β", "float", float(d["beta"])),
+            ("rho", "信息素挥发率 ρ", "float", float(d["rho"])),
+            ("Q", "信息素沉积量 Q", "float", float(d["Q"])),
+            ("max_iterations", "最大迭代次数", "int", int(d["max_iterations"])),
+            ("exploration_prob", "初始探索率(余弦衰减,0=关闭)", "float",
+             float(d["exploration_prob"])),
+            ("rcl_ratio", "RCL受限候选池占比", "float", float(d["rcl_ratio"])),
+            ("elite_weight", "全局最优精英沉积权重", "float", float(d["elite_weight"])),
+            ("elite_delay", "精英沉积启用迭代占比", "float", float(d["elite_delay"])),
+            ("tau0", "信息素初值(<=0自动)", "float", float(d["tau0"])),
+        ]
 
 
 def register():
