@@ -15,7 +15,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolb
 from matplotlib.figure import Figure
 from matplotlib.patches import Polygon as MplPolygon
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QHBoxLayout, QWidget, QVBoxLayout
+from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QWidget, QVBoxLayout
 
 from algorithms.aco.polygon_decomp import convex_decompose
 from data.dataset import Dataset
@@ -61,7 +61,14 @@ class PathCanvas(QWidget):
         self._decomposed = False
         self._layers = {"regions": True, "subregions": True, "internal": True,
                         "transitions": True, "launch": True, "image": True,
-                        "suborder": True}
+                        "suborder": True,
+                        "route": True}   # 「显示路径」总开关：移动路径+访问顺序
+        # 各算法路径的单独显隐（功能 1）：算法名 -> 工具栏勾选框
+        self._algo_toggles: Dict[str, QCheckBox] = {}
+        self._hidden_algos: set = set()
+        # 分解预览使用的分割算法（功能 2）：None=默认 Bayazit；及分解结果缓存
+        self._decomp_algo: Optional[str] = None
+        self._decomp_cache: Dict[tuple, list] = {}
 
         # 交互状态
         self._draw_mode = None        # None | "polygon" | "launch"
@@ -77,12 +84,63 @@ class PathCanvas(QWidget):
     def set_dataset(self, dataset: Optional[Dataset], decomposed: bool = False):
         self._dataset = dataset
         self._decomposed = decomposed
+        self._decomp_cache.clear()
         self._reset_view = True
         self.redraw()
 
     def set_results(self, results: Dict[str, dict]):
         self._results = dict(results or {})
+        self._rebuild_algo_toggles()
         self.redraw()
+
+    # ----------------------------------------------------- 各算法路径显隐
+    def _rebuild_algo_toggles(self):
+        """按当前结果中的算法重建工具栏勾选框（每个算法一个，默认显示）。"""
+        for cb in self._algo_toggles.values():
+            self._toolbar_row.removeWidget(cb)
+            cb.deleteLater()
+        self._algo_toggles.clear()
+        self._hidden_algos &= set(self._results.keys())
+        for k, algo in enumerate(self._results.keys()):
+            color = ALGO_COLORS[k % len(ALGO_COLORS)]
+            cb = QCheckBox(algo)
+            cb.setChecked(algo not in self._hidden_algos)
+            cb.setStyleSheet(f"QCheckBox{{color:{color};font-weight:bold;}}")
+            cb.setToolTip("勾选显示该算法的移动路径与访问顺序")
+            cb.toggled.connect(lambda on, a=algo: self._toggle_algo_path(a, on))
+            self._toolbar_row.addWidget(cb)
+            self._algo_toggles[algo] = cb
+
+    def _toggle_algo_path(self, algo: str, on: bool):
+        if on:
+            self._hidden_algos.discard(algo)
+        else:
+            self._hidden_algos.add(algo)
+        self.redraw()
+
+    # ----------------------------------------------------- 分解预览算法选择
+    def set_decomp_algorithm(self, algo_name: Optional[str]):
+        """选择分解预览所用分割算法（None/空串=默认 Bayazit）。"""
+        self._decomp_algo = algo_name or None
+        self._decomp_cache.clear()
+        self.redraw()
+
+    def _preview_pieces(self, pts: List[XY]) -> list:
+        """按所选分割算法计算单个地块的凸分解结果（带缓存）。"""
+        key = (self._decomp_algo or "",
+               tuple((round(float(x), 3), round(float(y), 3)) for x, y in pts))
+        if key in self._decomp_cache:
+            return self._decomp_cache[key]
+        if self._decomp_algo:
+            try:
+                from algorithms.common import decompose_region_with
+                pieces, _ = decompose_region_with(self._decomp_algo, pts)
+            except Exception:
+                pieces = convex_decompose(pts)
+        else:
+            pieces = convex_decompose(pts)
+        self._decomp_cache[key] = pieces
+        return pieces
 
     def add_toolbar_extra(self, widget):
         """把额外控件（如显示选项复选框）追加到画布工具栏右侧。"""
@@ -179,7 +237,7 @@ class PathCanvas(QWidget):
 
             if self._decomposed and self._layers["subregions"]:
                 try:
-                    parts = convex_decompose(pts)
+                    parts = self._preview_pieces(pts)
                 except Exception:
                     parts = []
                 for part in parts:
@@ -195,27 +253,33 @@ class PathCanvas(QWidget):
             self.ax.annotate("起飞点", (lx, ly), textcoords="offset points",
                              xytext=(8, 6), fontsize=9, color="#e6194b")
 
-        # 多算法结果叠加
+        # 「显示路径」总开关：关闭时移动路径（区域间连接 + 内部覆盖）与
+        # 地块/子区域访问顺序序号全部不绘制
+        show_route = self._layers.get("route", True)
+
+        # 多算法结果叠加（可通过工具栏对应算法的勾选框单独显隐）
         for k, (algo, run) in enumerate(self._results.items()):
+            if algo in self._hidden_algos:
+                continue
             color = ALGO_COLORS[k % len(ALGO_COLORS)]
             ls = ALGO_LINESTYLES[(k // len(ALGO_COLORS)) % len(ALGO_LINESTYLES)]
             wps = run.get("waypoints") or []
             if not wps:
                 continue
             pts_arr = np.asarray(wps, dtype=float)
-            if self._layers["transitions"]:
+            if show_route and self._layers["transitions"]:
                 self.ax.plot(pts_arr[:, 0], pts_arr[:, 1], ls, color=color,
                              linewidth=1.4, alpha=0.9,
                              label=f"{algo} ({run.get('total_distance', 0):.0f} m)",
                              zorder=4)
-            if self._layers["internal"]:
+            if show_route and self._layers["internal"]:
                 for path in run.get("internal_paths", []):
                     if len(path) < 2:
                         continue
                     p = np.asarray(path, dtype=float)
                     self.ax.plot(p[:, 0], p[:, 1], ls, color=color, linewidth=0.7,
                                  alpha=0.55, zorder=3)
-            if self._layers.get("suborder"):
+            if show_route and self._layers.get("suborder"):
                 for seq in run.get("subregion_sequence", []):
                     poly = seq.get("polygon") or []
                     if len(poly) < 3:

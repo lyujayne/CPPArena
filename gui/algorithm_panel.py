@@ -163,7 +163,8 @@ class AlgorithmPanel(QWidget):
                 continue
             if typ == "int":
                 w = QSpinBox()
-                w.setRange(1, 1000000)
+                # 下限 0：兼容 0/1 开关型参数（如分数阶、3-opt 消融开关）
+                w.setRange(0, 1000000)
                 w.setValue(int(default))
             else:
                 w = QDoubleSpinBox()

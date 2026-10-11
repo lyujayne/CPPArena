@@ -9,7 +9,7 @@ import traceback
 
 from PySide6.QtCore import QObject, QThread, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QDesktopServices
-from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFileDialog, QFormLayout,
                                QGroupBox, QHBoxLayout, QInputDialog, QLabel,
                                QListWidget, QListWidgetItem, QMainWindow,
@@ -33,11 +33,12 @@ from data.dataset import Dataset, Project
 from gui.algorithm_panel import AlgorithmPanel
 from gui.camera_panel import CameraPanel
 from gui.compare_panel import ComparePanel
+from gui.decomp_compare import DecompCompareDialog
 from gui.experiment_panel import ExperimentPanel
 from gui.path_canvas import PathCanvas
 from gui.result_panel import ResultPanel
 
-_BUILTIN_ALGOS = {"ACO-GTSP"}
+_BUILTIN_ALGOS = {"ACO-GTSP", "PSO-FA3ACO"}
 
 
 class RunWorker(QObject):
@@ -162,9 +163,24 @@ class MainWindow(QMainWindow):
         self.canvas = PathCanvas()
         # 显示选项复选框：放在画布工具栏右侧（替代原来左侧面板的位置）
         self.decomp_check = QCheckBox("分解预览（凸子区域）")
+        # 分解预览所用分割算法下拉框（各算法的分割方式）
+        self.decomp_algo_label = QLabel("分割算法:")
+        self.decomp_algo_combo = QComboBox()
+        self.decomp_algo_combo.setToolTip("选择分解预览使用哪个算法的分割方式")
+        for name in self.registry.names():
+            meta = self.registry.meta(name)
+            self.decomp_algo_combo.addItem(meta.get("display_name") or name, name)
+        self.btn_decomp_compare = QPushButton("分解对比")
+        self.btn_decomp_compare.setToolTip("弹出新窗口，并排对比各算法对每个地块的分割结果")
+        self.route_check = QCheckBox("显示路径（移动路径+访问顺序）")
+        self.route_check.setChecked(True)
         self.suborder_check = QCheckBox("显示子区域访问顺序")
         self.suborder_check.setChecked(True)
         self.canvas.add_toolbar_extra(self.decomp_check)
+        self.canvas.add_toolbar_extra(self.decomp_algo_label)
+        self.canvas.add_toolbar_extra(self.decomp_algo_combo)
+        self.canvas.add_toolbar_extra(self.btn_decomp_compare)
+        self.canvas.add_toolbar_extra(self.route_check)
         self.canvas.add_toolbar_extra(self.suborder_check)
 
         # ---- 右侧结果面板 ----
@@ -311,6 +327,12 @@ class MainWindow(QMainWindow):
         self.btn_launch.clicked.connect(self.canvas.start_set_launch)
         self.btn_cancel_draw.clicked.connect(self.canvas.cancel_draw)
         self.decomp_check.toggled.connect(self.canvas.set_decomposed)
+        # 分解预览：选择使用哪个算法的分割方式
+        self.decomp_algo_combo.currentIndexChanged.connect(
+            self._on_decomp_algo_changed)
+        self.btn_decomp_compare.clicked.connect(self._open_decomp_compare)
+        # 「显示路径」总开关：同时控制移动路径（区域间连接+内部覆盖）与访问顺序
+        self.route_check.toggled.connect(self._on_route_toggled)
         self.suborder_check.toggled.connect(
             lambda on: self.canvas.set_layer("suborder", on))
         self.region_list.itemSelectionChanged.connect(self._on_region_selected)
@@ -716,6 +738,40 @@ class MainWindow(QMainWindow):
     def _toggle_decomposed(self, on: bool):
         self.decomp_check.setChecked(on)
         self.canvas.set_decomposed(on)
+
+    def _on_route_toggled(self, on: bool):
+        """「显示路径」总开关：勾选显示移动路径与访问顺序，取消则一并隐藏；
+        关闭时「显示子区域访问顺序」复选框从属禁用。"""
+        self.canvas.set_layer("route", on)
+        self.suborder_check.setEnabled(on)
+
+    def _on_decomp_algo_changed(self, _idx: int):
+        """分解预览切换为所选算法的分割方式，并自动打开分解预览。"""
+        name = self.decomp_algo_combo.currentData()
+        self.canvas.set_decomp_algorithm(name)
+        if not self.decomp_check.isChecked():
+            self.decomp_check.setChecked(True)   # 触发 set_decomposed
+
+    def _open_decomp_compare(self):
+        """弹出分割方式对比窗口：行=地块，列=各算法。"""
+        ds = self.active_dataset
+        if ds is None or not ds.regions:
+            QMessageBox.information(self, "分解对比", "请先导入或勾绘地块后再进行分解对比。")
+            return
+        try:
+            params_by_algo = self.algo_panel.get_all_params()
+        except Exception:
+            params_by_algo = {}
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            dlg = DecompCompareDialog(
+                ds, self.registry.names(), registry=self.registry,
+                params_by_algo=params_by_algo, parent=self)
+        finally:
+            QApplication.restoreOverrideCursor()
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        self._decomp_dlg = dlg   # 保持引用，非模态打开
+        dlg.show()
 
     def _layer_dialog(self):
         dlg = QDialog(self)

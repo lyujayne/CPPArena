@@ -9,6 +9,26 @@ from algorithms.aco.boustrophedon import plan_region_variants, RegionCoverPlan
 from algorithms.aco.polygon_decomp import convex_decompose
 
 
+def decompose_region_with(algo_name: str, vertices, params: dict = None):
+    """按指定算法的子问题 1 分割方式对单个多边形做凸分解（供分解预览/对比复用）。
+
+    算法类实现了 decompose_region(vertices, params) -> (凸子区列表, 信息dict)
+    即调用之（ACO-GTSP=Bayazit，PSO-FA3ACO=PSO-DCAS）；未实现该钩子的算法
+    回退到 Bayazit 凸分解。
+    """
+    from core.registry import get_registry
+    cls = get_registry().get(algo_name)
+    if cls is not None and hasattr(cls, "decompose_region"):
+        p = dict(getattr(cls, "default_params", {}) or {})
+        if params:
+            p.update(params)
+        try:
+            return cls().decompose_region(vertices, p)
+        except Exception:
+            pass
+    return convex_decompose(vertices), {"segmentation": "Bayazit(poly_decomp)"}
+
+
 def plan_all_regions(regions, line_spacing: float,
                      fixed_direction=None) -> Dict[int, List[List[RegionCoverPlan]]]:
     """为每个区域的每个凸子区域生成 4 种覆盖方案。"""

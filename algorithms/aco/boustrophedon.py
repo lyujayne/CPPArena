@@ -97,6 +97,13 @@ def _strip_segments(poly_pts: List[XY], sweep_dir, line_spacing: float
     strips = []
     for k in range(n_strips):
         t = tmin + line_spacing * (k + 0.5)
+        # 极窄子区（宽度不足一个航线间距）时取投影区间正中作为唯一扫描中线：
+        # 中线沿长度方向横穿凸多边形内部，必有非零交线段（夹取到端点 tmax
+        # 只会擦过顶点、交集退化为零长度点，导致"无交集"误报）。
+        if span < line_spacing:
+            t = tmin + span / 2.0
+        else:
+            t = min(tmax, max(tmin, t))
         center = np.array(poly_pts[0]) + normal * (t - (np.array(poly_pts[0]) @ normal))
         a = center - d * L
         b = center + d * L

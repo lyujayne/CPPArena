@@ -4,6 +4,11 @@
 子问题1：凹多边形贪心凸分解 → 若干凸子区域
 子问题2：逐区域牛耕式路径生成 → 每区域 4 种进出点方案
 子问题3：E-GTSP 建模 + ACO 求解 → 最优区域访问顺序
+
+子问题 3 的求解器通过 solve_region_order() 钩子调用：基准使用标准
+ANT-cycle 蚁群（aco_gtsp，对齐 Kato et al. 2025）；子类可重写该钩子
+替换为论文 Wu et al. (2025) 的 FA3ACO（fa3aco_gtsp，分数阶转移 +
+自适应蒸发率 + 3-opt），其余编排（分割、牛耕、建模、组装）完全复用。
 """
 import random
 import time
@@ -27,6 +32,22 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
     default_params = ALGORITHM_DEFAULTS["ACO-GTSP"]
     deterministic = False
 
+    def decompose_region(self, vertices, params):
+        """子问题 1——区域分割钩子（子类可重写以替换分割方式做对比）。
+
+        :return: (凸子区域 CCW 环列表, 分割信息字典)
+        基准算法使用 Bayazit 凸分解（poly_decomp 库移植）。
+        """
+        return convex_decompose(vertices), {"segmentation": "Bayazit(poly_decomp)"}
+
+    def solve_region_order(self, nodes, params, seed):
+        """子问题 3 求解器钩子（子类可重写以替换区域访问顺序优化算法）。
+
+        基准：标准 ANT-cycle 蚁群求解 E-GTSP（aco_gtsp，Kato et al. 2025）。
+        :return: (最优节点序列[不含起降点], 收敛历史, 统计字典)
+        """
+        return solve_aco_gtsp(nodes, params=params, seed=seed)
+
     def solve(self, cpp_input: CPPInput, **params) -> CPPResult:
         t0 = time.perf_counter()
         seed = int(params.get("seed", 42))
@@ -43,7 +64,7 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
         decomp_info = []
         region_convex_polys = {}
         for region in cpp_input.regions:
-            convex_parts = convex_decompose(region.vertices)
+            convex_parts, seg_info = self.decompose_region(region.vertices, params)
             region_convex_polys[region.id] = convex_parts
             plans_by_sub = []
             for sub_idx, sub_pts in enumerate(convex_parts):
@@ -53,8 +74,10 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
                 plans_by_sub.append(variants)
             subregion_plans[region.id] = plans_by_sub
             subregion_counts[region.id] = len(plans_by_sub)
-            decomp_info.append({"region": region.name,
-                                "n_subregions": len(plans_by_sub)})
+            info_item = {"region": region.name,
+                         "n_subregions": len(plans_by_sub)}
+            info_item.update(seg_info or {})
+            decomp_info.append(info_item)
 
         # ---- 子问题 3：E-GTSP 建模 + ACO 求解 ----
         nodes: list = [GTSPNode(index=0, region_id=-1, subregion_id=0,
@@ -76,8 +99,8 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
                     node_by_sub.setdefault(sub_id_counter, []).append(nd)
                 sub_id_counter += 1
 
-        visit, convergence, stats = solve_aco_gtsp(
-            nodes, params=params, seed=seed)
+        visit, convergence, stats = self.solve_region_order(
+            nodes, params, seed)
 
         # ---- 组装全局结果 ----
         region_order = []
@@ -115,7 +138,7 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
 
         runtime = time.perf_counter() - t0
         metadata = {
-            "algorithm": "ACO-GTSP",
+            "algorithm": self.name,
             "decomposition": decomp_info,
             "n_subregions_total": sum(subregion_counts.values()),
             "subregion_counts": subregion_counts,
