@@ -112,7 +112,7 @@ def generate_report(project_name: str, camera: dict, runs_by_algo: Dict[str, Lis
         md.append(f"### {algo}")
         for r in runs:
             md.append(f"- seed={r['seed']}: 距离 {r['total_distance']:.2f} m, "
-                      f"转弯 {r['total_turns']}, 耗时 {r['runtime']:.3f} s")
+                      f"航向拐点 {r['total_turns']}, 耗时 {r['runtime']:.3f} s")
         md.append("")
     return "\n".join(md)
 

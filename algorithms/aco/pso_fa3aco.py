@@ -1,30 +1,8 @@
 # -*- coding: utf-8 -*-
-"""论文完整算法：PSO-FA3ACO（Wu et al. 2025, Scientific Reports）。
-
-论文：Wenxing Wu, Zhigang Wang, Lianhai Lin, Xin Chang, Liqin Tian,
-"An efficient coverage path planning method for UAV in complex concave
-regions", Scientific Reports 15:37227, DOI 10.1038/s41598-025-20978-8。
-
-两阶段完整复刻（论文 Algorithm 1 的 PSO-FA3ACO 总体框架）：
-- **子问题 1 区域分割（§3.1 / Algorithm 2，PSO-DCAS）**：叉积法识别凹点
-  （Eq.1-2），每个凹点一个切割方向角粒子维度，以各凸子区**旋转卡壳最小
-  宽度之和** min Σw(R_i)（Eq.3/8）为适应度，粒子群（Eq.13/14，w:0.9→0.2、
-  c1=c2=2）全局优化切割方向；实现见 pso_decomp.py。
-- **子问题 2 区域内覆盖（§3.3）**：各凸子区按最小宽度方向做牛耕式往复
-  扫描，每个子区生成 4 种进出点方案；实现沿用 boustrophedon.py（与基准
-  相同，论文对区域内扫描的描述与该实现等价）。
-- **子问题 3 区域间访问顺序（§4 / Algorithm 3-4，FA3ACO）**：E-GTSP
-  建模（每子区 4 个进出方案节点、组内互斥、起降点），由**分数阶蚁群**
-  求解——分数阶状态转移（Eq.16，Grünwald–Letnikov 历史记忆）、自适应
-  信息素蒸发率 ρ(t)=ρ_min+(ρ_max−ρ_min)e^{−kt}（Eq.18）、逐蚂蚁 3-opt
-  局部搜索（Algorithm 3 的 8 种断边重连）；实现见 fa3aco_gtsp.py。
-
-与基准 ACO-GTSP（Bayazit 凸分解 + 标准 ANT-cycle 蚁群，对齐 Kato
-et al. 2025）形成完整对比：分割方式与区域间求解器均按 Wu et al. (2025)
-替换。三个消融开关 fractional_order / adaptive_rho / use_three_opt
-可逐项关闭，复现论文 Table 2 中 ACO、3opt-ACO、fractional-ACO、
-Hybrid-ACO、FA3ACO 的消融对比。
-"""
+"""Wu 2025 两阶段框架：PSO最小宽度和分割、牛耕覆盖、FA3ACO。
+论文Eq.16与作者公开代码不一致，当前默认作者历史信息素积分核；
+挥发率和逐蚂蚁完整3-opt按论文实现。不是未经限定的“完整复刻”。
+见 PAPER_ALIGNMENT.md 及算法metadata中的具体假设。"""
 from config.default_params import ALGORITHM_DEFAULTS
 from algorithms.aco import ACOGTSPAlgorithm
 from algorithms.aco.pso_decomp import pso_convex_decompose
@@ -33,12 +11,10 @@ from algorithms.aco.fa3aco_gtsp import solve_fa3aco_gtsp
 
 class PSOFA3ACOAlgorithm(ACOGTSPAlgorithm):
     name = "PSO-FA3ACO"
-    display_name = "PSO-FA3ACO（文献完整算法）"
-    description = ("Wu et al. (2025, Scientific Reports) 完整两阶段算法：粒子群动态"
-                   "凹区域分割（PSO-DCAS，叉积法识别凹点、旋转卡壳最小宽度之和为"
-                   "适应度）→ 各凸子区牛耕式扫描（4 种进出点方案）→ FA3ACO 分数阶"
-                   "蚁群优化区域访问顺序（分数阶状态转移 Eq.16 + 自适应信息素蒸发率"
-                   "Eq.18 + 3-opt 局部搜索 Algorithm 3）。")
+    display_name = "PSO-FA3ACO（论文框架/作者记忆核）"
+    description = ("Wu论文PSO分割与FA3ACO框架；默认使用作者公开历史信息素积分，"
+                   "按论文实现自适应挥发和完整3-opt。原式核验模式遇负概率会报错，"
+                   "具体差异见PAPER_ALIGNMENT.md。")
     default_params = ALGORITHM_DEFAULTS["PSO-FA3ACO"]
     deterministic = False
 
@@ -62,6 +38,14 @@ class PSOFA3ACOAlgorithm(ACOGTSPAlgorithm):
             ("pso_w_min", "惯性权重下限 w_min", "float", float(d["pso_w_min"])),
             ("pso_c1", "个体学习因子 c1", "float", float(d["pso_c1"])),
             ("pso_c2", "群体学习因子 c2", "float", float(d["pso_c2"])),
+            ("pso_vmax_ratio", "速度上限比例(×角度跨度)", "float",
+             float(d["pso_vmax_ratio"])),
+            ("pso_warm_start", "平分线热启动(1开/0关)", "int",
+             int(bool(d["pso_warm_start"]))),
+            ("pso_merge_slivers", "合并退化碎块(1开/0关)", "int",
+             int(bool(d["pso_merge_slivers"]))),
+            ("pso_sliver_diag_ratio", "碎块阈值(×对角线)", "float",
+             float(d["pso_sliver_diag_ratio"])),
         ]
         fa_spec = [
             ("ants_count", "蚁群蚂蚁数 m", "int", int(d["ants_count"])),
@@ -69,8 +53,10 @@ class PSOFA3ACOAlgorithm(ACOGTSPAlgorithm):
             ("alpha", "信息素权重 α", "float", float(d["alpha"])),
             ("beta", "距离权重 β", "float", float(d["beta"])),
             ("Q", "信息素沉积量 Q", "float", float(d["Q"])),
-            ("fractional_order", "分数阶状态转移(Eq.16)", "int",
+            ("fractional_order", "启用分数阶记忆", "int",
              int(bool(d["fractional_order"]))),
+            ("fractional_mode", "分数阶模式(1作者积分/0原式核验)", "int", int(d["fractional_mode"])),
+            ("memory_strength", "作者积分记忆强度", "float", float(d["memory_strength"])),
             ("mu", "分数阶阶数 μ∈(0,1)", "float", float(d["mu"])),
             ("adaptive_rho", "自适应蒸发率(Eq.18)", "int",
              int(bool(d["adaptive_rho"]))),
@@ -80,7 +66,7 @@ class PSOFA3ACOAlgorithm(ACOGTSPAlgorithm):
             ("rho_fixed", "固定蒸发率(关闭自适应时)", "float", float(d["rho_fixed"])),
             ("use_three_opt", "3-opt 局部搜索(Alg.3)", "int",
              int(bool(d["use_three_opt"]))),
-            ("tau0", "信息素初值(<=0自动)", "float", float(d["tau0"])),
+            ("tau0", "信息素初值(正数)", "float", float(d["tau0"])),
         ]
         return pso_spec + fa_spec
 

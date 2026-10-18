@@ -28,13 +28,18 @@ class ResultPanel(QWidget):
         self.lbl_dist = QLabel("--")
         self.lbl_turns = QLabel("--")
         self.lbl_runtime = QLabel("--")
+        self.lbl_coverage = QLabel("--")
+        self.lbl_objective = QLabel("--")
+        self.lbl_objective.setWordWrap(True)
         self.lbl_order = QLabel("--")
         self.lbl_order.setWordWrap(True)
         form.addRow("算法", self.lbl_algo)
         form.addRow("随机种子", self.lbl_seed)
         form.addRow("总飞行距离 (m)", self.lbl_dist)
-        form.addRow("总转弯次数", self.lbl_turns)
+        form.addRow("航向拐点数(>5°)", self.lbl_turns)
         form.addRow("运行耗时 (s)", self.lbl_runtime)
+        form.addRow("扫描足迹覆盖率", self.lbl_coverage)
+        form.addRow("优化目标", self.lbl_objective)
         v.addWidget(g)
 
         g2 = QGroupBox("算法细节（metadata）")
@@ -46,7 +51,8 @@ class ResultPanel(QWidget):
 
     def clear(self):
         for lbl in (self.lbl_algo, self.lbl_seed, self.lbl_dist,
-                    self.lbl_turns, self.lbl_runtime, self.lbl_order):
+                    self.lbl_turns, self.lbl_runtime, self.lbl_order,
+                    self.lbl_coverage, self.lbl_objective):
             lbl.setText("--")
         self.detail.setPlainText("运行实验后，此处显示算法细节（凸分解信息、"
                                  "GTSP 统计、收敛末尾值等）。")
@@ -64,6 +70,12 @@ class ResultPanel(QWidget):
         conv = run.get("convergence") or []
         lines = []
         meta = run.get("metadata") or {}
+        coverage = meta.get("coverage", {})
+        ratio = coverage.get("covered_ratio")
+        self.lbl_coverage.setText(f"{ratio*100:.4f}%（连续拍摄模型）" if ratio is not None else "--")
+        objective = meta.get("gtsp", {}).get("objective")
+        self.lbl_objective.setText("开放子区连接距离（不含起降和内部扫描）"
+            if objective == "open_inter_region_distance" else "完整任务距离")
         if meta:
             try:
                 lines.append(json.dumps(meta, ensure_ascii=False, indent=2))

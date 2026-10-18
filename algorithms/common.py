@@ -22,10 +22,7 @@ def decompose_region_with(algo_name: str, vertices, params: dict = None):
         p = dict(getattr(cls, "default_params", {}) or {})
         if params:
             p.update(params)
-        try:
-            return cls().decompose_region(vertices, p)
-        except Exception:
-            pass
+        return cls().decompose_region(vertices, p)
     return convex_decompose(vertices), {"segmentation": "Bayazit(poly_decomp)"}
 
 

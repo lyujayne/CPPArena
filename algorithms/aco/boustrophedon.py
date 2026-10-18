@@ -1,17 +1,20 @@
 # -*- coding: utf-8 -*-
 """子问题 2：凸子区域内部牛耕式（往复扫描）覆盖路径生成。
 
-- 计算多边形各边对应的高度，取最大高度对应边为最优飞行方向；
+- 对每条边的最大高度取最小值，航线平行于对应支撑边；
 - 按航线间距生成平行扫描线，与多边形求交得到覆盖条带；
-- 蛇形连接各条带，输出 4 种等效方案（内部距离、转弯次数一致，
-  仅进出点不同：4 个角落 × 起止方向）。
+- 先统一交线段端点方向，再交替连接；四变体里程分别计算。
+- 航段覆盖整个条带内的纵向范围，避免只截中心交线导致尖角漏扫。
+  条带端点可能在区域外；论文假定无禁飞区，此几何补全在结果中明确记录。
 """
 import math
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import numpy as np
-from shapely.geometry import Polygon, LineString, MultiLineString, GeometryCollection
+from shapely.geometry import Polygon
+from shapely.ops import unary_union
+from algorithms.aco.polygon_decomp import clean_ring, ensure_ccw, reflex_indices
 
 XY = Tuple[float, float]
 
@@ -25,6 +28,7 @@ class RegionCoverPlan:
     internal_distance: float
     turns: int
     variant_id: int = 0            # 0..3
+    scan_segments: List[Tuple[XY, XY]] = field(default_factory=list)
 
     def to_dict(self):
         return {
@@ -54,8 +58,7 @@ def choose_sweep_direction(pts: List[XY]) -> np.ndarray:
     """选择最优飞行方向（论文 Algorithm 1 / subproblem 2）。
 
     对每条边计算顶点到该边的最大距离（=多边形在垂直于该边方向的
-    投影高度），取该距离**最小**的那条边。这条边沿多边形最长轴，
-    飞行方向平行于它，使牛耕扫描线数量最少、内部转弯次数最少
+    投影高度），取该距离**最小**的那条边。飞行方向平行于这条支撑边，使牛耕扫描线数量最少、内部转弯次数最少
     （与 Fig.6 矩形沿长边横扫一致）。
     """
     n = len(pts)
@@ -76,42 +79,45 @@ def choose_sweep_direction(pts: List[XY]) -> np.ndarray:
 
 def _strip_segments(poly_pts: List[XY], sweep_dir, line_spacing: float
                     ) -> List[Tuple[XY, XY]]:
-    """生成与 sweep_dir 垂直、间距 line_spacing 的扫描线，返回各条带线段。"""
-    if line_spacing <= 1e-9:
+    """等间距、居中的扫描线；用每条带的投影包络确定航段长度。
+
+    每个条带宽度不超过 spacing，条带内任意点到其航段的法向距离
+    不超过 spacing/2。由此连续拍摄宽度 >= spacing 时覆盖完整区域。
+    """
+    if not math.isfinite(line_spacing) or line_spacing <= 1e-9:
         raise ValueError("航线间距必须大于 0（请检查相机参数与旁向重叠率）")
+    poly_pts = ensure_ccw(clean_ring(poly_pts))
     poly = Polygon(poly_pts)
-    pts = np.array(poly_pts)
+    if not poly.is_valid or poly.area <= 1e-12 or reflex_indices(poly_pts):
+        raise ValueError("牛耕扫描要求有效、非退化的凸多边形，请先完成凸分解")
+    # 平移到局部原点，降低 UTM 大坐标造成的投影误差。
+    origin = np.asarray(poly_pts[0], dtype=float)
+    pts = np.asarray(poly_pts, dtype=float) - origin
     d = _unit(sweep_dir)
     normal = np.array([-d[1], d[0]])
     proj = pts @ normal
     tmin, tmax = float(proj.min()), float(proj.max())
     span = tmax - tmin
-    n_strips = max(1, int(math.floor(span / line_spacing)))
-    if span - n_strips * line_spacing > 1e-9:
-        n_strips += 1
-
-    # 扫描线覆盖长度（取包围盒对角线，保证直线完全穿越多边形）
-    L = float(np.hypot(pts[:, 0].max() - pts[:, 0].min(),
-                       pts[:, 1].max() - pts[:, 1].min())) + line_spacing * 2
-
+    n_strips = max(1, int(math.ceil(span / line_spacing - 1e-12)))
+    if n_strips > 100000:
+        raise ValueError("扫描条带超过 100000，请检查单位、航高和重叠率")
+    start = (tmin + tmax - (n_strips - 1) * line_spacing) / 2.0
+    us = pts @ d
+    umin, umax = float(us.min()), float(us.max())
+    local_poly = Polygon(np.column_stack((us, proj)))
     strips = []
     for k in range(n_strips):
-        t = tmin + line_spacing * (k + 0.5)
-        # 极窄子区（宽度不足一个航线间距）时取投影区间正中作为唯一扫描中线：
-        # 中线沿长度方向横穿凸多边形内部，必有非零交线段（夹取到端点 tmax
-        # 只会擦过顶点、交集退化为零长度点，导致"无交集"误报）。
-        if span < line_spacing:
-            t = tmin + span / 2.0
-        else:
-            t = min(tmax, max(tmin, t))
-        center = np.array(poly_pts[0]) + normal * (t - (np.array(poly_pts[0]) @ normal))
-        a = center - d * L
-        b = center + d * L
-        inter = poly.intersection(LineString([tuple(a), tuple(b)]))
-        seg = _longest_segment(inter)
-        if seg is None:
-            continue
-        strips.append(seg)
+        t = start + k * line_spacing
+        lo, hi = max(tmin, t-line_spacing/2), min(tmax, t+line_spacing/2)
+        band = Polygon([(umin-1, lo), (umax+1, lo),
+                        (umax+1, hi), (umin-1, hi)])
+        clipped = local_poly.intersection(band)
+        if clipped.is_empty or clipped.area <= 0:
+            raise RuntimeError("扫描条带退化，未生成完整覆盖方案")
+        left, _, right, _ = clipped.bounds
+        a = origin + d * left + normal * t
+        b = origin + d * right + normal * t
+        strips.append((tuple(a), tuple(b)))
     return strips
 
 
@@ -142,12 +148,13 @@ def _longest_segment(geom):
 
 def plan_region_variants(poly_pts: List[XY], line_spacing: float,
                          sweep_dir: Optional[np.ndarray] = None,
+                         boundary_joints: bool = False,
                          ) -> List[RegionCoverPlan]:
     """生成一个凸子区域的 4 种牛耕式覆盖方案。
 
     :param poly_pts: 凸多边形顶点（CCW）
     :param line_spacing: 航线间距 (m)
-    :param sweep_dir: 指定扫描方向（None 则按最大高度边自动选择）
+    :param sweep_dir: 指定扫描方向（None 则按最小宽度支撑边自动选择）
     :return: 4 个 RegionCoverPlan
     """
     if sweep_dir is None:
@@ -165,8 +172,8 @@ def plan_region_variants(poly_pts: List[XY], line_spacing: float,
         """按条带顺序与首段方向生成蛇形路径。
 
         每条带都追加 (entry, exit) 两个点；相邻条带之间的连接线
-        由上一条的 exit 指向下一条的 entry 自动形成（同端垂直连接，
-        而不是斜穿整个条带宽度）。
+        端点已按扫描方向投影升序统一，因此行号奇偶翻转始终可靠。
+        非矩形边界的同侧连接可以倾斜，不能假定全部连接都垂直。
         """
         path = []
         segs = list(strips)
@@ -184,13 +191,49 @@ def plan_region_variants(poly_pts: List[XY], line_spacing: float,
     for vid, (order, flip) in enumerate([("asc", False), ("asc", True),
                                          ("desc", False), ("desc", True)]):
         path, dist = build(order, flip)
+        if boundary_joints:
+            # Li Eq.29/30：两条宽度支撑线各有1或2个边界连接点。
+            # 显式连接实际扫描航段，不把理论连接点与执行端点混为一谈。
+            points = np.asarray(poly_pts, dtype=float)
+            local = points-points[0]
+            heights = local @ normal
+            tolerance = max(1e-8, float(np.ptp(heights))*1e-10)
+            low = points[np.abs(heights-heights.min()) <= tolerance]
+            high = points[np.abs(heights-heights.max()) <= tolerance]
+            first_support, last_support = (low, high) if order == "asc" else (high, low)
+            first_forward = np.dot(np.subtract(path[1], path[0]), d) > 0
+            last_forward = np.dot(np.subtract(path[-1], path[-2]), d) > 0
+            entry = first_support[np.argmin(first_support @ d) if first_forward else np.argmax(first_support @ d)]
+            exit = last_support[np.argmax(last_support @ d) if last_forward else np.argmin(last_support @ d)]
+            path = [tuple(entry)] + path + [tuple(exit)]
+            dist = _seg_len(path)
         if len(path) < 2:
             continue
         variants.append(RegionCoverPlan(
             path=path, entry=path[0], exit=path[-1],
             internal_distance=dist, turns=max(0, len(strips) - 1),
-            variant_id=vid))
+            variant_id=vid, scan_segments=list(strips)))
     return variants
+
+
+def coverage_geometry(plan: RegionCoverPlan, direction, footprint_width: float,
+                      footprint_height: float):
+    """固定航向、垂直相机连续拍摄的足迹并集，仅计算扫描航段。
+
+    不把转运航段拍摄计入覆盖保证。离散拍照还要求触发间距 <= 足迹长度，
+    触发器/曝光时间不属于本平台航点文件的执行语义。
+    """
+    if min(footprint_width, footprint_height) <= 0:
+        raise ValueError("相机足迹必须为正数")
+    d = _unit(direction)
+    normal = np.array([-d[1], d[0]])
+    hw, hh = footprint_width/2.0, footprint_height/2.0
+    swept = []
+    for a, b in plan.scan_segments:
+        a, b = np.asarray(a)-d*hh, np.asarray(b)+d*hh
+        swept.append(Polygon([a-normal*hw, b-normal*hw,
+                              b+normal*hw, a+normal*hw]))
+    return unary_union(swept)
 
 
 def _seg_len(pts) -> float:

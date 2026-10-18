@@ -32,8 +32,8 @@ def build_comparison_table(runs_by_algo: Dict[str, List[dict]],
         ("total_distance", "std"): "总距离标准差",
         ("total_distance", "min"): "总距离最优",
         ("total_distance", "max"): "总距离最差",
-        ("total_turns", "mean"): "转弯次数均值",
-        ("total_turns", "min"): "转弯次数最优",
+        ("total_turns", "mean"): "航向拐点均值",
+        ("total_turns", "min"): "航向拐点最少",
         ("runtime", "mean"): "耗时均值 (s)",
     }
 

@@ -26,7 +26,7 @@ def main():
         try:
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "CPP.Arena.1.2")
+                f"CPP.Arena.{APP_VERSION}")
         except Exception:
             pass
 

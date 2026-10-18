@@ -21,7 +21,8 @@ Python 库 "poly_decomp"（PyPI: poly_decomp 0.0.1），该库为 Mark Bayazit
 兜底（算法本身保证收敛，仅以递归层数上限保护）。
 """
 import math
-from typing import List, Tuple
+import random
+from typing import List, Optional, Tuple
 
 XY = Tuple[float, float]
 EPS = 1e-9
@@ -143,7 +144,7 @@ def _line_intersection(p1: XY, p2: XY, q1: XY, q2: XY) -> XY:
 
 def _quick_decomp(poly: List[XY], result: List[List[XY]],
                   reflex_vertices: List[XY], steiner_points: List[XY],
-                  maxlevel: int, level: int, max_pieces: int
+                  maxlevel: int, level: int, rng: random.Random
                   ) -> List[List[XY]]:
     """Bayazit 快速凸分解（poly_decomp.polygonQuickDecomp 的 Python3 移植）。
 
@@ -153,14 +154,18 @@ def _quick_decomp(poly: List[XY], result: List[List[XY]],
     :param steiner_points: 新建顶点记录（Case 1 的对边中点，与库一致）
     :param maxlevel: 最大递归层数（库默认 100），防止不收敛时无限递归
     :param level: 当前递归层数
-    :param max_pieces: 结果数量安全上限（超出时剩余子环原样输出）
+    :param rng: 随机数生成器（论文：算法从某个随机顶点开始遍历找凹点）
     """
     if len(poly) < 3:
         return result
     level += 1
     if level > maxlevel:
-        return result
-    for i in range(len(poly)):
+        raise RuntimeError("Bayazit 超过递归深度上限，未输出遗漏区域的分割")
+    n_poly = len(poly)
+    # 论文 3.2：从一个随机顶点开始、循环遍历其余顶点，直到找到第一个凹顶点
+    start = rng.randrange(n_poly)
+    for off in range(n_poly):
+        i = (start + off) % n_poly
         if not _is_reflex(poly, i):
             continue
         reflex_vertices.append(poly[i])
@@ -245,38 +250,38 @@ def _quick_decomp(poly: List[XY], result: List[List[XY]],
                 _append(lower_poly, poly, 0, closest_index + 1)
                 _append(upper_poly, poly, closest_index, i + 1)
 
-        # 结果数量安全上限：超限则剩余子环原样输出（与原实现行为一致）
-        if len(result) + 2 > max_pieces:
-            result.append(poly)
-            return result
-
         # 先分解较小的子环（与库一致，减少递归深度）
         if len(lower_poly) < len(upper_poly):
             _quick_decomp(lower_poly, result, reflex_vertices, steiner_points,
-                          maxlevel, level, max_pieces)
+                          maxlevel, level, rng)
             _quick_decomp(upper_poly, result, reflex_vertices, steiner_points,
-                          maxlevel, level, max_pieces)
+                          maxlevel, level, rng)
         else:
             _quick_decomp(upper_poly, result, reflex_vertices, steiner_points,
-                          maxlevel, level, max_pieces)
+                          maxlevel, level, rng)
             _quick_decomp(lower_poly, result, reflex_vertices, steiner_points,
-                          maxlevel, level, max_pieces)
+                          maxlevel, level, rng)
         return result
 
     result.append(poly)
     return result
 
 
-def convex_decompose(vertices: List[XY], max_pieces: int = 64) -> List[List[XY]]:
+def convex_decompose(vertices: List[XY], seed: Optional[int] = None
+                     ) -> List[List[XY]]:
     """凹多边形凸分解（复刻论文所用 poly_decomp 库的 Bayazit 算法）。
 
     :param vertices: 任意凹/凸多边形顶点（XY 米制坐标，闭合或不闭合均可）
-    :param max_pieces: 结果数量安全上限（论文算法本身无此限制；超限时
-        剩余子环原样输出，可能含凹块——与原实现行为一致）
+    :param seed: 随机种子（论文 3.2：算法从一个随机顶点开始遍历；给定 seed
+        可复现，None 则使用系统熵）
     :return: 凸子区域顶点列表（每个子区域为 CCW 环）
+
+    说明：原 poly_decomp 库仅有 maxlevel 递归深度保护、无片数上限，故本
+    实现不设 max_pieces，完全依靠 maxlevel=100 保证终止（库行为）。
     """
     pts = ensure_ccw(clean_ring(vertices))
     result: List[List[XY]] = []
+    rng = random.Random(seed)
     _quick_decomp(pts, result, [], [],
-                  maxlevel=100, level=0, max_pieces=max_pieces)
+                  maxlevel=100, level=0, rng=rng)
     return [ensure_ccw(p) for p in result]

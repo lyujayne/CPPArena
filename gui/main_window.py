@@ -38,7 +38,7 @@ from gui.experiment_panel import ExperimentPanel
 from gui.path_canvas import PathCanvas
 from gui.result_panel import ResultPanel
 
-_BUILTIN_ALGOS = {"ACO-GTSP", "PSO-FA3ACO"}
+_BUILTIN_ALGOS = {"ACO-GTSP", "PSO-FA3ACO", "Enhanced-ECD-ACO", "Enhanced-ECD-DP"}
 
 
 class RunWorker(QObject):
@@ -872,7 +872,8 @@ class MainWindow(QMainWindow):
             self, f"关于 {APP_NAME}",
             f"<b>{APP_NAME} v{APP_VERSION}</b><br><br>"
             "无人机覆盖路径规划（CPP）算法比较平台<br>"
-            "内置 ACO-GTSP 基准算法（严格对齐论文三步法），"
+            "内置三种切割/算法：ACO-GTSP（Bayazit，基准）、PSO-FA3ACO（PSO-DCAS）、"
+            "Enhanced-ECD-ACO（增强精确单元分解，Li 2011），"
             "支持多算法 × 多数据集 × 多随机种子公平比较，"
             "一键导出论文图表与 LaTeX 表格。<br><br>"
             "技术栈：PySide6 · Shapely · pyproj · Matplotlib · NumPy · Pandas")

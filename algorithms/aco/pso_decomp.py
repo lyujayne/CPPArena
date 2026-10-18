@@ -1,45 +1,8 @@
 # -*- coding: utf-8 -*-
-"""子问题 1（论文分割法）：粒子群优化的动态凹区域分割（DCAS）。
-
-复刻论文：Wenxing Wu, Zhigang Wang, Lianhai Lin, Xin Chang, Liqin Tian (2025)
-"An efficient coverage path planning method for UAV in complex concave regions",
-Scientific Reports 15:37227, DOI 10.1038/s41598-025-20978-8（PSO-FA3ACO）。
-
-论文 §3.1 "Area partitioning" 与 Algorithm 2（Decomposition of Task Region
-Using Particle Optimization）的分割流程：
-
-1. **凹点识别（§3.1.1, Eq.1-2）**：叉积法（cross product）逐顶点判断，
-   CCW 环上叉积 F<0 的顶点为凹点（reflex / concave point）；
-2. **切割角上下界（§3.1.1 Step 2, Fig.6）**：对每个凹点，取其两条邻边
-   相对 x 轴的方位角作为该粒子维度的下界 d_min、上界 d_max（即多边形
-   在凹点处的内部楔形开口区，跨度 > 180°）；
-3. **粒子编码（Algorithm 2 Step 3）**：设凹点总数为 N，每个粒子位置
-   X=(θ_1,…,θ_N)，θ_i 为第 i 个凹点的切割方向角，取值限于 [d_min,d_max]，
-   种群规模 M；
-4. **适应度（Eq.3 / Eq.8）**：按各凹点的方向角把多边形切成若干子多边形，
-   满足凸性约束(Eq.4)、覆盖完整性(Eq.5)、不重叠(Eq.6)、边界一致(Eq.7)时，
-   适应度为各凸子多边形**最小宽度之和** min Σ w(R_i)；宽度由**旋转卡壳法**
-   （Rotating Calipers, §3.1.1 Fig.3, O(n)）计算——宽度方向即牛耕扫描方向，
-   最小化宽度之和即最小化各子区扫描线条数与转弯次数；
-5. **粒子群迭代（Eq.13-14, Table 1）**：
-   v ← w·v + c1·r1·(pbest−x) + c2·r2·(gbest−x)，x ← x + v；
-   惯性权重 w 由 w_max=0.9 线性衰减到 w_min=0.2，c1=c2=2，r1,r2~U[0,1]；
-6. 迭代结束（FEs ≤ MaxFEs）后用 gbest 的角度组执行切割，返回凸子区域。
-
-工程鲁棒性（论文未细述、为保证可比较而补的实现细节）：
-- 切割按凹点在原环上的顺序依次施加：从凹点沿方向角投射射线，与所在子片
-  边界求最近交点，沿"凹点—交点"把该子片切成两片（交点可为对边上的
-  Steiner 新点，等价论文 Fig.17(e) 的内部分解边）；
-- 粒子角度若因前序切割改变了局部楔形而越界，夹取到当前内部楔形内；
-  切割后若仍残留凹点（角度靠近楔形边、一片内凹角仍 >180°），用内部角
-  平分线补充切割并在适应度中施加大罚值（凸性约束 Eq.4 的罚函数实现），
-  因此本模块**始终返回完整覆盖原多边形的凸子区域**，不会让对比流程中断；
-- 初始种群强制加入一个"凹角平分线"确定性可行粒子（热启动/兜底），
-  与 ACO 模块的最近邻贪心兜底同理；
-- 切割线擦过顶点或与边近共线时可能产生宽度趋零的针尖碎块（无法容纳
-  扫描航线），最终结果经 merge_slivers() 与邻片合并（面积守恒、合并后
-  重新保证凸性），保证下游牛耕路径对任何输入都能生成。
-"""
+"""Wu 2025 PSO凸分解：每凹点一个切割角，以可行分割的最小宽度和为目标。
+按Eq.4限制单次切割的凸性可行角锥；按Eq.13/14更新粒子。
+原文未公开射线切割、角度约束求解和分割阶段预算，相关实现取值单独报告。
+默认不热启动、不做碎片后处理；最终不可行则报错，不静默补切输出。"""
 import math
 from typing import Dict, List, Optional, Tuple
 
@@ -169,13 +132,31 @@ def _cut_piece(poly: List[XY], i: int, angle: float
 
 # ================================================================ 旋转卡壳宽度
 def rotating_calipers_width(pts: List[XY]) -> float:
-    """凸多边形最小宽度（旋转卡壳法，论文 §3.1.1 Fig.3）。
+    """凸环 O(n) 对跖点旋转卡壳宽度；凹的递归中间片先取凸包。"""
+    return rotating_calipers_width_dir(pts)[0]
 
-    定理：凸多边形的最小宽度必在卡壳平行线与某条边平行时取得。对每条边
-    取法向，计算全部顶点在法向上的投影跨度作为该姿态宽度，取最小值。
+
+def rotating_calipers_width_dir(pts: List[XY]) -> Tuple[float, float]:
+    """凸多边形（最小宽度, 宽度方向）。
+
+    宽度方向即取得最小宽度时支撑线（平行于对应边）的方位角，也就是牛耕
+    扫描航线方向。用于论文 §4.5 判定两个子区“宽度方向相同”。
+    :return: (width, direction)，direction ∈ [0, 2π)，为无向直线方向
     """
+    pts = ensure_ccw(clean_ring(pts))
+    if reflex_indices(pts):
+        hull = _ShPolygon(pts).convex_hull
+        pts = list(hull.exterior.coords[:-1])
+        pts = ensure_ccw(pts)
     n = len(pts)
     best = float("inf")
+    best_dir = 0.0
+    def cross_distance(i, k):
+        a, b, q = pts[i], pts[(i+1) % n], pts[k % n]
+        return abs((b[0]-a[0])*(q[1]-a[1])-(b[1]-a[1])*(q[0]-a[0]))
+    # 初始对跖点先扫描一次；不能从相邻点开始，否则首边多个共线
+    # 顶点造成等值平台时会停在距离0处。
+    j = max(range(n), key=lambda k: cross_distance(0, k))
     for i in range(n):
         ax, ay = pts[i]
         bx, by = pts[(i + 1) % n]
@@ -183,12 +164,16 @@ def rotating_calipers_width(pts: List[XY]) -> float:
         ln = math.hypot(ex, ey)
         if ln < 1e-15:
             continue
-        nx, ny = -ey / ln, ex / ln
-        projs = [p[0] * nx + p[1] * ny for p in pts]
-        w = max(projs) - min(projs)
+        # 对跖点沿边顺序单调前进，所有边合计不超过两圈。
+        while cross_distance(i, j+1) > cross_distance(i, j) + 1e-12:
+            j = (j+1) % n
+        w = cross_distance(i, j) / ln
         if w < best:
             best = w
-    return float(best)
+            best_dir = math.atan2(ey, ex)
+    if not math.isfinite(best) or best <= 1e-12:
+        raise ValueError("多边形宽度退化，无法分解或扫描")
+    return float(best), float(best_dir % math.pi)
 
 
 # ================================================================ 施加一组切割角
@@ -355,7 +340,10 @@ def _evaluate(vertices: List[XY], angles: List[float],
         if not math.isfinite(w):
             return INFEASIBLE_PENALTY, None, n_extra, n_clamp
         width_sum += w
-    return width_sum + RESIDUAL_PENALTY * n_extra, pieces, n_extra, n_clamp
+    # Eq.8 是可行域内的宽度和；修复结果不冒充该粒子原角度的可行解。
+    if n_extra or n_clamp:
+        return INFEASIBLE_PENALTY + width_sum, pieces, n_extra, n_clamp
+    return width_sum, pieces, n_extra, n_clamp
 
 
 # ================================================================ PSO 主流程（Algorithm 2）
@@ -377,6 +365,12 @@ def pso_convex_decompose(vertices: List[XY], params: Optional[Dict] = None,
     w_min = float(params.get("pso_w_min", 0.2))     # 论文 Table 1
     c1 = float(params.get("pso_c1", 2.0))           # 论文 Table 1
     c2 = float(params.get("pso_c2", 2.0))           # 论文 Table 1
+    vmax_ratio = float(params.get("pso_vmax_ratio", 0.15))
+    warm_start = int(bool(params.get("pso_warm_start", 0)))
+    do_merge = int(bool(params.get("pso_merge_slivers", 0)))
+    sliver_ratio = float(params.get("pso_sliver_diag_ratio", 0.001))
+    if swarm < 1 or max_iter < 0 or min(w_max, w_min, c1, c2, vmax_ratio, sliver_ratio) < 0 or w_min > w_max:
+        raise ValueError("PSO种群必须为正、迭代非负，惯性/学习/速度界参数无效")
 
     ring = ensure_ccw(clean_ring(vertices))
     reflex_idx = reflex_indices(ring)
@@ -395,15 +389,19 @@ def pso_convex_decompose(vertices: List[XY], params: Optional[Dict] = None,
         }
 
     rng = np.random.RandomState(seed)
-    lo = np.array([reflex_wedge_bounds(ring, i)[0] for i in reflex_idx])
-    hi = np.array([reflex_wedge_bounds(ring, i)[1] for i in reflex_idx])
+    bounds = [reflex_wedge_bounds(ring, i) for i in reflex_idx]
+    # Eq.4 凸性约束：一次切割两侧角度均 <= pi 的可行锥。
+    # 论文未给出该约束的数值处理，这里限制定义域而不对结果补切。
+    lo = np.array([b-math.pi for a, b in bounds])
+    hi = np.array([a+math.pi for a, b in bounds])
     span = hi - lo
-    vmax = 0.15 * span
+    vmax = vmax_ratio * span
 
-    # ---- Step 3-4：初始种群（第 0 号粒子为凹角平分线确定性可行解）----
+    # ---- Step 3-4：初始种群（warm_start=1 时第 0 号粒子为凹角平分线可行解）----
     bisect = (lo + hi) / 2.0
     positions = rng.uniform(lo, hi, size=(max(1, swarm), n_ref))
-    positions[0] = bisect
+    if warm_start:
+        positions[0] = bisect
     velocities = rng.uniform(-vmax, vmax, size=positions.shape)
 
     # 初值（Eq.8）
@@ -414,6 +412,8 @@ def pso_convex_decompose(vertices: List[XY], params: Optional[Dict] = None,
     g_idx = int(np.argmin(pbest_fit))
     gbest = pbest[g_idx].copy()
     gbest_fit = float(pbest_fit[g_idx])
+    # 原文没给出可行种群生成细节；随机种群全不可行时明确报错，
+    # 允许显式启用平分线初值，而不是静默换分割方法。
     best_iter = 0
     convergence = [gbest_fit]
 
@@ -443,19 +443,18 @@ def pso_convex_decompose(vertices: List[XY], params: Optional[Dict] = None,
 
     # ---- 用 gbest 角度组执行最终分割 ----
     pieces, n_extra, n_clamp = apply_directed_cuts(ring, list(gbest), reflex_idx)
-    if pieces is None:
-        # 极端兜底：纯平分线分解（保证对比流程不中断）
-        pieces = bisector_decompose(ring)
-        n_extra = -1
-        if pieces is None:
-            raise RuntimeError("PSO-DCAS 分割失败：无法将多边形分解为凸子区域")
+    if pieces is None or n_extra or n_clamp:
+        raise RuntimeError("PSO 未找到满足 Eq.4–8 的原角度可行分割；请增大种群/迭代，"
+                           "或显式启用 pso_warm_start=1（工程可行初值）")
 
-    # ---- 后处理：合并切割线擦过顶点/近共线边产生的退化碎块 ----
-    diag = math.hypot(max(p[0] for p in ring) - min(p[0] for p in ring),
-                      max(p[1] for p in ring) - min(p[1] for p in ring))
-    min_width = 1e-3 * diag                 # 小于多边形对角线千分之一的宽度视为碎块
-    min_area = 0.5 * min_width ** 2
-    pieces, n_merged = merge_slivers(pieces, min_width, min_area)
+    # ---- 后处理：合并切割线擦过顶点/近共线边产生的退化碎块（可关闭）----
+    n_merged = 0
+    if do_merge:
+        diag = math.hypot(max(p[0] for p in ring) - min(p[0] for p in ring),
+                          max(p[1] for p in ring) - min(p[1] for p in ring))
+        min_width = sliver_ratio * diag      # 宽度小于对角线该比例者视为碎块
+        min_area = 0.5 * min_width ** 2
+        pieces, n_merged = merge_slivers(pieces, min_width, min_area)
 
     widths = [rotating_calipers_width(p) for p in pieces]
     info = {
@@ -465,6 +464,7 @@ def pso_convex_decompose(vertices: List[XY], params: Optional[Dict] = None,
         "width_sum": round(float(sum(widths)), 4),
         "widths": [round(float(x), 4) for x in widths],
         "pso_iterations": max_iter,
+        "fitness_evaluations": positions.shape[0] * (max_iter + 1),
         "swarm_size": positions.shape[0],
         "best_iteration": best_iter,
         "n_extra_cuts": n_extra,

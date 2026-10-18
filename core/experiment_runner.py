@@ -122,7 +122,8 @@ class ExperimentRunner:
         random.seed(job.seed)
         np.random.seed(job.seed)
 
-        result = algo.solve(cpp_input, **job.params)
+        effective_params = dict(algo.default_params, **job.params)
+        result = algo.solve(cpp_input, **effective_params)
         from compare.metrics import summarize_run
         run_dict = summarize_run(result)
         run_dict["dataset"] = job.dataset.name
@@ -132,7 +133,7 @@ class ExperimentRunner:
         run_dict["internal_paths"] = result.internal_paths
         run_dict["subregion_sequence"] = result.subregion_sequence
         run_dict["metadata"] = result.metadata
-        run_dict["params"] = {k: v for k, v in job.params.items() if k != "seed"}
+        run_dict["params"] = {k: v for k, v in effective_params.items() if k != "seed"}
         return run_dict
 
     def cancel(self):

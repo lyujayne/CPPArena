@@ -108,7 +108,7 @@ class ComparePanel(QWidget):
         self.stat_canvas = FigureCanvasQTAgg(Figure(figsize=(7, 6), dpi=100))
         stat_v.addWidget(self.stat_canvas)
         self.stat_hint = QLabel("柱状图：总距离均值±标准差；箱线图：多次运行分布；"
-                                "散点图：距离 vs 转弯 Pareto 视角")
+                                "散点图：距离 vs 航向拐点 Pareto 视角")
         self.stat_hint.setStyleSheet("color:#888;font-size:11px;")
         stat_v.addWidget(self.stat_hint)
         self.tabs.addTab(self.stat_host, "统计图表")
@@ -216,51 +216,37 @@ class ComparePanel(QWidget):
     def _rebuild_convergence(self):
         fig = self.conv_canvas.figure
         fig.clear()
-        ax = fig.add_subplot(111)
-        runs_by_algo = self._active_runs()
-        colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd",
-                  "#ff7f0e", "#8c564b", "#e377c2", "#7f7f7f"]
-        plotted = 0
-        for k, (algo, runs) in enumerate(runs_by_algo.items()):
-            convs = [np.asarray(r.get("convergence") or [], dtype=float)
-                     for r in runs]
-            convs = [c for c in convs if c.size > 0]
-            if not convs:
-                continue
-            maxlen = max(len(c) for c in convs)
-            mat = np.full((len(convs), maxlen), np.nan)
-            for i, c in enumerate(convs):
-                mat[i, :len(c)] = c
-            mean = np.nanmean(mat, axis=0)
-            std = np.nanstd(mat, axis=0)
-            color = colors[k % len(colors)]
-            x = np.arange(maxlen)
-            if len(convs) > 1:
-                ax.fill_between(x, mean - std, mean + std, color=color,
-                                alpha=0.15)
-            ax.plot(x, mean, color=color, linewidth=1.6,
-                    label=f"{algo} (n={len(convs)})")
-            if mean.size:
-                bi = int(np.nanargmin(mean))
-                ax.annotate(f"{mean[bi]:.0f} @ {bi}",
-                            xy=(bi, mean[bi]), xytext=(8, 10),
-                            textcoords="offset points", fontsize=8,
-                            color=color,
-                            arrowprops=dict(arrowstyle="->", color=color,
-                                            lw=0.8))
-            plotted += 1
-        if plotted == 0:
-            ax.text(0.5, 0.5, "无可比收敛数据：\n元启发式算法（如 ACO-GTSP）"
-                              "才有收敛历史，\n确定性基线无迭代过程。",
-                    ha="center", va="center", transform=ax.transAxes,
-                    fontsize=11, color="#666")
+        grouped = {}
+        for algo, runs in self._active_runs().items():
+            for run in runs:
+                objective = (run.get("metadata") or {}).get("gtsp", {}).get("objective", "mission_total_distance")
+                curve = np.asarray(run.get("convergence") or [], dtype=float)
+                if curve.size:
+                    grouped.setdefault(objective, {}).setdefault(algo, []).append(curve)
+        if not grouped:
+            ax = fig.add_subplot(111)
+            ax.text(.5, .5, "暂无有效收敛数据", ha="center", va="center", transform=ax.transAxes)
             ax.set_axis_off()
-        else:
-            ax.set_xlabel("迭代次数")
-            ax.set_ylabel("全程路径最优值 (m)")
-            ax.set_title("多算法收敛曲线对比")
-            ax.grid(True, alpha=0.3)
-            ax.legend(loc="upper right", fontsize=8)
+        for pos, (objective, curves) in enumerate(grouped.items(), 1):
+            ax = fig.add_subplot(len(grouped), 1, pos)
+            for algo, convs in curves.items():
+                mat = np.full((len(convs), max(map(len, convs))), np.nan)
+                for i, curve in enumerate(convs):
+                    mat[i, :len(curve)] = curve
+                mean, std = np.nanmean(mat, axis=0), np.nanstd(mat, axis=0)
+                x = np.arange(mean.size)
+                line, = ax.plot(x, mean, marker="o" if mean.size == 1 else None,
+                                linewidth=1.6, label=f"{algo} (n={len(convs)})")
+                if len(convs) > 1:
+                    ax.fill_between(x, mean-std, mean+std, color=line.get_color(), alpha=.15)
+            label = ("开放子区连接距离（不含起降/内部）" if objective == "open_inter_region_distance"
+                     else "完整任务距离")
+            ax.set_ylabel(label+" (m)")
+            ax.set_xlabel("迭代编号 / DP结果")
+            ax.set_title(label+"：同目标函数比较")
+            ax.grid(True, alpha=.3)
+            ax.legend(fontsize=8)
+        fig.tight_layout()
         self.conv_canvas.draw_idle()
         self._conv_fig = fig
 
@@ -315,7 +301,7 @@ class ComparePanel(QWidget):
         ax2.set_title("多次运行分布（稳定性）")
         ax2.grid(axis="y", alpha=0.3)
 
-        # 3) 散点图：距离 vs 转弯
+        # 3) 散点图：距离 vs 航向拐点
         ax3 = fig.add_subplot(1, 3, 3)
         for k, algo in enumerate(algos):
             ds = dist_all[k]
@@ -323,8 +309,8 @@ class ComparePanel(QWidget):
             ax3.scatter(ds, ts, s=36, color=colors[k % len(colors)],
                         alpha=0.8, label=algo, edgecolors="white", linewidths=0.5)
         ax3.set_xlabel("总距离 (m)")
-        ax3.set_ylabel("总转弯次数")
-        ax3.set_title("距离 vs 转弯（Pareto 视角）")
+        ax3.set_ylabel("航向拐点数(>5°)")
+        ax3.set_title("距离 vs 航向拐点（Pareto 视角）")
         ax3.grid(alpha=0.3)
         ax3.legend(fontsize=7, loc="best")
 
