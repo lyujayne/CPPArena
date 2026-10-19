@@ -11,6 +11,7 @@ the paper's nturn naming is ambiguous. No silent heuristic fallback.
 import math
 import time
 import numpy as np
+from core.execution_control import checkpoint
 from shapely.geometry import Polygon
 from algorithms.aco.aco_gtsp import build_cost_matrix, validate_visit
 
@@ -67,6 +68,8 @@ def solve_li_dp_connection(nodes, params, seed=42):
         for v in groups[group]:
             dp[bits[group], v] = 0.
     for mask in range(1 << G):
+        if mask % 64 == 0:
+            checkpoint("精确DP状态", mask, 1 << G)
         for last in np.flatnonzero(np.isfinite(dp[mask])):
             for g in gids:
                 if mask & bits[g] or (g == end and (mask | bits[g]) != full):

@@ -1,10 +1,14 @@
-# CPP Arena v1.7.1
+# CPP Arena v1.7.2
 
 无人机覆盖路径规划算法比较平台：多边形导入、区域分割、牛耕扫描、区域间连接、路径显示、实验记录及航点导出。
 
 2026-10-18版本依据三篇论文重新核对并修改代码。**可确认的原文内容、实现假设与无法严格复现的部分见 [PAPER_ALIGNMENT.md](PAPER_ALIGNMENT.md)**。不将工程改动统称为完整复刻。
 
 ## 启动
+
+Windows 10/11（64位）用户可从 [GitHub Release](https://github.com/lyujayne/CPPArena/releases/latest) 下载 `CPPArena.exe`，无需安装Python。将exe放在可写文件夹后双击运行；首次启动需等待单文件资源解压。工程、实验记录及设置保存在exe旁，请保留这些文件夹。
+
+从源码启动：
 
 双击 `start.bat`，或在本目录执行：
 
@@ -55,8 +59,15 @@ python main.py
 
 ## 验证
 
+v1.7.2修复计算期间窗口卡顿及PSO进度停留问题：界面通过独立进程运行算法，
+阶段进度包含区域编号、PSO/FA3ACO迭代和耗时；终止会停止当前计算。
+完整3-opt和信息素计算已优化，原有80只蚂蚁、500代及全部邻域保持不变。
+默认大算例仍可能需要数分钟，进度持续更新时表示正在计算。
+详情见 [PERFORMANCE.md](PERFORMANCE.md)。修改代码后需退出旧进程并重新启动。
+
 ```powershell
 python -m pytest test_paper_alignment.py -q
+python -m pytest test_responsiveness.py -q
 python test_li_dp.py
 python test_fa3aco.py
 ```

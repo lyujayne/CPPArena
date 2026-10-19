@@ -11,6 +11,10 @@ XY = Tuple[float, float]
 TURN_ANGLE_THRESHOLD_DEG = 5.0
 
 
+def successful_run(run):
+    return not run.get('error') and math.isfinite(float(run.get('total_distance', float('nan'))))
+
+
 def path_length(waypoints: List[XY]) -> float:
     """航点序列总长度 (m)。"""
     return float(sum(

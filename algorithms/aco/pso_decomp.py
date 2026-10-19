@@ -7,6 +7,7 @@ import math
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+from core.execution_control import checkpoint
 from shapely.geometry import Polygon as _ShPolygon
 
 from algorithms.aco.polygon_decomp import (
@@ -192,6 +193,7 @@ def apply_directed_cuts(vertices: List[XY],
     n_clamp = 0
 
     for v, ang in zip(reflex_pts, angles):
+        checkpoint()
         # 找到仍以 v 为凹点的子片（前序切割可能已把该凹点消解）
         target = None
         for pidx, p in enumerate(pieces):
@@ -226,6 +228,7 @@ def apply_directed_cuts(vertices: List[XY],
     result: List[List[XY]] = []
     guard = 0
     while work:
+        checkpoint()
         guard += 1
         if guard > 10000:
             return None, n_extra, n_clamp
@@ -331,6 +334,7 @@ def merge_slivers(pieces: List[List[XY]], min_width: float,
 def _evaluate(vertices: List[XY], angles: List[float],
               reflex_idx: List[int]) -> Tuple[float, Optional[List[List[XY]]], int, int]:
     """论文 Eq.8 适应度：可行时为 Σ 旋转卡壳宽度；不可行施加大罚值。"""
+    checkpoint()
     pieces, n_extra, n_clamp = apply_directed_cuts(vertices, angles, reflex_idx)
     if pieces is None:
         return INFEASIBLE_PENALTY, None, 0, n_clamp
@@ -419,6 +423,7 @@ def pso_convex_decompose(vertices: List[XY], params: Optional[Dict] = None,
 
     # ---- Step 5-6：Eq.13 / Eq.14 速度位置更新 ----
     for it in range(max_iter):
+        checkpoint("PSO区域分割", it+1, max_iter)
         w = w_max - (w_max - w_min) * (it / max(1, max_iter - 1))
         r1 = rng.uniform(0.0, 1.0, size=positions.shape)
         r2 = rng.uniform(0.0, 1.0, size=positions.shape)
@@ -441,6 +446,7 @@ def pso_convex_decompose(vertices: List[XY], params: Optional[Dict] = None,
             best_iter = it + 1
         convergence.append(gbest_fit)
 
+    checkpoint("PSO区域分割", max_iter, max_iter, force=True)
     # ---- 用 gbest 角度组执行最终分割 ----
     pieces, n_extra, n_clamp = apply_directed_cuts(ring, list(gbest), reflex_idx)
     if pieces is None or n_extra or n_clamp:
@@ -450,6 +456,7 @@ def pso_convex_decompose(vertices: List[XY], params: Optional[Dict] = None,
     # ---- 后处理：合并切割线擦过顶点/近共线边产生的退化碎块（可关闭）----
     n_merged = 0
     if do_merge:
+        checkpoint("PSO分割后处理：合并碎片", force=True)
         diag = math.hypot(max(p[0] for p in ring) - min(p[0] for p in ring),
                           max(p[1] for p in ring) - min(p[1] for p in ring))
         min_width = sliver_ratio * diag      # 宽度小于对角线该比例者视为碎块

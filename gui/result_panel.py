@@ -59,6 +59,13 @@ class ResultPanel(QWidget):
 
     def show_run(self, run: dict):
         """run: ExperimentRunner 输出的单次运行字典。"""
+        if run.get('error'):
+            self.clear()
+            self.lbl_algo.setText(str(run.get('algorithm', '--')))
+            self.lbl_seed.setText(str(run.get('seed', '--')))
+            self.lbl_objective.setText('运行失败')
+            self.detail.setPlainText(run['error'])
+            return
         self.lbl_algo.setText(str(run.get("algorithm", "--")))
         self.lbl_seed.setText(str(run.get("seed", "--")))
         self.lbl_dist.setText(f"{run.get('total_distance', float('nan')):.2f}")

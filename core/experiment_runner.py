@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """实验调度层：批量运行、随机种子管理、超时控制、进度回调。
 
-以纯线程方式实现（不依赖 Qt），便于 GUI 通过 QThread 包装异步运行。
+GUI使用独立spawn进程运行每个任务，QThread只协调消息和生命周期。
+保留进程内接口用于脚本；两种接口均支持阶段进度、取消和超时。
 """
 import random
+import multiprocessing
+import os
 import threading
 import time
 import traceback
@@ -15,8 +18,67 @@ import numpy as np
 from core.base_algorithm import CPPInput
 from core.registry import AlgorithmRegistry
 from data.dataset import Dataset
+from core.execution_control import execution_context, ExperimentCancelled
 
 ProgressCB = Callable[[int, int, str], None]  # (done, total, message)
+_spawn_lock = threading.Lock()
+
+
+def _run_isolated_job(job, plugin_dirs, connection, cancelled, timeout):
+    """Top-level spawn target: never import or manipulate Qt widgets."""
+    try:
+        if os.name == 'nt':
+            import ctypes
+            from ctypes import wintypes
+            kernel = ctypes.windll.kernel32
+            kernel.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel.SetPriorityClass.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+            kernel.SetPriorityClass.restype = wintypes.BOOL
+            try:
+                kernel.SetPriorityClass(kernel.GetCurrentProcess(), 0x00004000)
+            except OSError:
+                pass  # Optional scheduling hint; isolation still works.
+        registry = AlgorithmRegistry.instance()
+        registry.load_builtins()
+        for directory in plugin_dirs:
+            registry.add_plugin_dir(directory)
+        registry.refresh()
+        runner = ExperimentRunner(registry)
+        with execution_context(cancelled.is_set,
+                lambda message: connection.send(('progress', message)), timeout):
+            result = runner._run_single(job)
+        result.setdefault('metadata', {})['execution'] = {
+            'worker_pid': os.getpid(), 'backend': 'spawn-process'}
+        connection.send(('result', result))
+    except ExperimentCancelled:
+        connection.send(('cancelled', None))
+    except Exception as exc:
+        connection.send(('error', (f'{type(exc).__name__}: {exc}', traceback.format_exc())))
+    finally:
+        connection.close()
+
+
+def _start_process(process):
+    # Small matrix operations should not start a large BLAS thread pool.
+    # Only the spawned child's environment inherits these limits.
+    keys = ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMEXPR_NUM_THREADS')
+    with _spawn_lock:
+        previous = {key: os.environ.get(key) for key in keys}
+        try:
+            os.environ.update({key: '1' for key in keys})
+            process.start()
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+
+def _failed_run(job, error, trace=''):
+    return {'algorithm': job.algorithm, 'seed': job.seed, 'dataset': job.dataset.name,
+            'error': error, 'traceback': trace, 'total_distance': float('nan'),
+            'total_turns': -1, 'runtime': 0., 'convergence': []}
 
 
 @dataclass
@@ -75,6 +137,90 @@ class ExperimentRunner:
         return jobs
 
     # ---------------- 运行 ----------------
+    def prepare(self):
+        """Called on the UI thread before starting the coordinator thread."""
+        self._cancel.clear()
+
+    def run_jobs_isolated(self, jobs, progress=None, stop_requested=None, reset_cancel=True):
+        if reset_cancel:
+            self.prepare()
+        context = multiprocessing.get_context('spawn')
+        results = {}
+        total = len(jobs)
+        stopping = lambda: self._cancel.is_set() or bool(stop_requested and stop_requested())
+        for index, job in enumerate(jobs):
+            if stopping():
+                break
+            label = f'{job.algorithm} @ {job.dataset.name} (seed={job.seed})'
+            if progress:
+                progress(index, total, '启动计算进程：'+label)
+            receive, send = context.Pipe(duplex=False)
+            cancelled = context.Event()
+            process = context.Process(target=_run_isolated_job,
+                args=(job, list(self.registry._plugin_dirs), send, cancelled, self._timeout_per_job),
+                name='CPP-'+job.algorithm, daemon=True)
+            started = time.monotonic()
+            value, stage, last_update = None, '启动/导入算法', 0.
+            try:
+                _start_process(process)
+                send.close()
+                while True:
+                    if stopping():
+                        cancelled.set()
+                        break
+                    elapsed = time.monotonic()-started
+                    if self._timeout_per_job is not None and elapsed >= self._timeout_per_job:
+                        cancelled.set()
+                        value = _failed_run(job, 'TimeoutError: 当前算法超过运行时间上限')
+                        break
+                    if receive.poll(.05):
+                        try:
+                            kind, payload = receive.recv()
+                        except EOFError:
+                            value = _failed_run(job, f'计算进程意外退出（exitcode={process.exitcode}）')
+                            break
+                        if kind == 'progress':
+                            stage = payload
+                            if progress:
+                                progress(index, total, f'{label}：{stage}，已用 {elapsed:.1f}s')
+                                last_update = time.monotonic()
+                        elif kind == 'result':
+                            value = payload
+                            break
+                        elif kind == 'error':
+                            value = _failed_run(job, *payload)
+                            break
+                        elif kind == 'cancelled':
+                            break
+                    elif not process.is_alive():
+                        value = _failed_run(job, f'计算进程意外退出（exitcode={process.exitcode}）')
+                        break
+                    now = time.monotonic()
+                    if progress and now-last_update >= .2:
+                        progress(index, total, f'{label}：{stage}，已用 {elapsed:.1f}s')
+                        last_update = now
+            finally:
+                send.close()
+                if process.pid is not None:
+                    process.join(.25)
+                    if process.is_alive():
+                        process.terminate()
+                        process.join(1.)
+                    if process.is_alive():
+                        process.kill()
+                        process.join(1.)
+                    process.close()
+                receive.close()
+            if stopping():
+                break
+            if value is None:
+                value = _failed_run(job, '计算任务被终止，未返回完整结果')
+            value['elapsed_total'] = round(time.monotonic()-started, 3)
+            results.setdefault(job.dataset.name, {}).setdefault(job.algorithm, []).append(value)
+            if progress:
+                progress(index+1, total, label+('：完成' if 'error' not in value else '：'+value['error']))
+        return results
+
     def run_jobs(self, jobs: List[ExperimentJob],
                  progress: Optional[ProgressCB] = None,
                  stop_requested: Optional[Callable[[], bool]] = None
@@ -93,8 +239,14 @@ class ExperimentRunner:
             if progress:
                 progress(idx, total, f"运行 {job.algorithm} @ {job.dataset.name} (seed={job.seed})")
             try:
-                run_dict = self._run_single(job)
+                with execution_context(
+                        lambda: self._cancel.is_set() or bool(stop_requested and stop_requested()),
+                        (lambda message: progress(idx, total, f'{job.algorithm}：{message}')) if progress else None,
+                        self._timeout_per_job):
+                    run_dict = self._run_single(job)
                 run_dict["elapsed_total"] = round(time.perf_counter() - t_start, 3)
+            except ExperimentCancelled:
+                break
             except Exception as e:
                 run_dict = {
                     "algorithm": job.algorithm, "seed": job.seed,

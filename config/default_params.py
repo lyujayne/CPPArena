@@ -3,12 +3,22 @@
 See PAPER_ALIGNMENT.md for differences between Wu's text and public MATLAB code.
 """
 import os
+import sys
 
 APP_NAME = "CPP Arena"
-APP_VERSION = "1.7.1"
+APP_VERSION = "1.7.2"
 
 # 项目根目录（cpp_arena/）
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 打包为 exe（PyInstaller 冻结）后：只读资源在 sys._MEIPASS（临时解压目录），
+# 实验记录、工程等用户可写数据放在 exe 所在目录，避免关闭程序后随临时目录丢失。
+def _base_dir() -> str:
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+BASE_DIR = _base_dir()
+RESOURCE_DIR = getattr(sys, "_MEIPASS", BASE_DIR)
 EXPERIMENT_DIR = os.path.join(BASE_DIR, "experiments")
 PLUGIN_DIR = os.path.join(BASE_DIR, "algorithms", "plugins")
 PROJECT_DIR = os.path.join(BASE_DIR, "projects")

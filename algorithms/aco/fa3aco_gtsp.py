@@ -11,8 +11,10 @@ Reference commit: wu457120325/FA3ACO b9579cc203d1b0588f79a6391bee834c05a06f2e.
 import itertools
 import math
 import numpy as np
-from algorithms.aco.aco_gtsp import (build_cost_matrix, transition_probabilities,
-                                    tour_distance, validate_visit)
+from core.execution_control import checkpoint
+from algorithms.aco.aco_gtsp import (build_cost_matrix,
+                                    tour_distance, validate_visit, transition_log_scores,
+                                    probabilities_from_logs)
 
 
 def gruenwald_letnikov_coeffs(mu, n):
@@ -55,60 +57,94 @@ def build_reverse_node_map(nodes):
     return rev
 
 
-def three_opt_tour(internal, cost, rev_map, inside_of, cache):
-    """Full closed-cycle 3-opt. Fix depot 0, never fix its next node.
+def _cut_blocks(size):
+    # Bound scratch arrays even for unusually large decompositions.
+    from itertools import islice
+    triples = itertools.combinations(range(size), 3)
+    while True:
+        block = list(islice(triples, 4096))
+        if not block:
+            return
+        yield np.asarray(block, dtype=np.intp)
 
-    Three cuts create segments A,B,C (C contains depot). Keep C's orientation,
-    enumerate A/B order and both orientations: all eight reconnections. Segment
-    costs include every directed internal edge and variant's internal distance.
+
+def three_opt_tour(internal, cost, rev_map, inside_of, cache):
+    """Same complete 8-way closed 3-opt neighborhood, evaluated in NumPy blocks.
+
+    Every directed segment edge and internal coverage cost remains included.
+    Blocking bounds memory, releases the GIL during arithmetic, and permits cancel.
     """
     key = tuple(internal)
     if key in cache:
         seq, gain = cache[key]
         return list(seq), gain, gain > 1e-9, True
-    s = [0] + list(internal)
-    def actual(route):
-        return float(sum(inside_of(x) for x in route)
-                     + sum(cost[a, b] for a, b in zip(route, route[1:]+route[:1])))
-    original = actual(s)
+    s = [0]+list(internal)
     N = len(s)
+    inside = np.asarray([inside_of(i) for i in range(len(cost))])
+    reverse = np.asarray([rev_map.get(i, i) for i in range(len(cost))], dtype=np.intp)
+    def actual(route):
+        t = np.asarray(route, dtype=np.intp)
+        return float(inside[t].sum()+cost[t, np.roll(t, -1)].sum())
+    original = actual(s)
     while N >= 3:
-        doubled = s+s
-        forward_inside = np.concatenate(([0.], np.cumsum([inside_of(x) for x in doubled])))
-        reverse_inside = np.concatenate(([0.], np.cumsum([inside_of(rev_map[x]) for x in doubled])))
-        forward_edges = np.concatenate(([0.], np.cumsum([cost[a, b] for a, b in zip(doubled, doubled[1:])])))
-        reverse_edges = np.concatenate(([0.], np.cumsum([cost[rev_map[b], rev_map[a]] for a, b in zip(doubled, doubled[1:])])))
-        def segment(lo, hi, reverse=False):
-            ip, ep = (reverse_inside, reverse_edges) if reverse else (forward_inside, forward_edges)
-            value = ip[hi]-ip[lo] + ep[hi-1]-ep[lo]
-            head, tail = doubled[lo], doubled[hi-1]
-            if reverse:
-                head, tail = rev_map[tail], rev_map[head]
-            return (head, tail, float(value), lo, hi, reverse)
-        def score(parts):
-            return sum(x[2] for x in parts)+sum(cost[a[1], b[0]] for a, b in zip(parts, parts[1:]+parts[:1]))
-        best_cost, best_parts = actual(s), None
-        for i, j, k in itertools.combinations(range(N), 3):
-            C = segment(k+1, N+i+1)
-            for ra, rb in itertools.product((False, True), repeat=2):
-                A, B = segment(i+1, j+1, ra), segment(j+1, k+1, rb)
-                for parts in ([C, A, B], [C, B, A]):
-                    value = score(parts)
-                    if value < best_cost-1e-9:
-                        best_cost, best_parts = value, parts
-        if best_parts is None:
+        checkpoint()
+        known = cache.get(tuple(s[1:]))
+        if known is not None:
+            s = [0]+list(known[0])
             break
-        candidate = []
-        for _, _, _, lo, hi, reverse in best_parts:
-            seg = doubled[lo:hi]
-            candidate.extend([rev_map[x] for x in reversed(seg)] if reverse else seg)
+        doubled = np.asarray(s+s, dtype=np.intp)
+        reversed_nodes = reverse[doubled]
+        fi = np.r_[0., np.cumsum(inside[doubled])]
+        ri = np.r_[0., np.cumsum(inside[reversed_nodes])]
+        fe = np.r_[0., np.cumsum(cost[doubled[:-1], doubled[1:]])]
+        re = np.r_[0., np.cumsum(cost[reversed_nodes[1:], reversed_nodes[:-1]])]
+        best_cost, best_move = actual(s), None
+        for cuts in _cut_blocks(N):
+            checkpoint()
+            i, j, k = cuts.T
+            def segment(lo, hi, rev=False):
+                ip, ep = (ri, re) if rev else (fi, fe)
+                value = ip[hi]-ip[lo]+ep[hi-1]-ep[lo]
+                head, tail = doubled[lo], doubled[hi-1]
+                if rev:
+                    head, tail = reverse[tail], reverse[head]
+                return head, tail, value
+            C = segment(k+1, N+i+1)
+            AA = [segment(i+1, j+1), segment(i+1, j+1, True)]
+            BB = [segment(j+1, k+1), segment(j+1, k+1, True)]
+            scores = np.empty((len(cuts), 8))
+            column = 0
+            for ra, rb in itertools.product((0, 1), repeat=2):
+                A, B = AA[ra], BB[rb]
+                base = C[2]+A[2]+B[2]
+                scores[:, column] = base+cost[C[1], A[0]]+cost[A[1], B[0]]+cost[B[1], C[0]]
+                scores[:, column+1] = base+cost[C[1], B[0]]+cost[B[1], A[0]]+cost[A[1], C[0]]
+                column += 2
+            flat = int(np.argmin(scores))
+            row, variant = divmod(flat, 8)
+            value = float(scores[row, variant])
+            if value < best_cost-1e-9:
+                best_cost = value
+                best_move = (*map(int, cuts[row]), variant//4, (variant//2)%2, variant%2)
+        if best_move is None:
+            break
+        i, j, k, ra, rb, swap = best_move
+        A, B, C = s[i+1:j+1], s[j+1:k+1], s[k+1:]+s[:i+1]
+        if ra:
+            A = [rev_map[x] for x in reversed(A)]
+        if rb:
+            B = [rev_map[x] for x in reversed(B)]
+        candidate = C+(B+A if swap else A+B)
         z = candidate.index(0)
         candidate = candidate[z:]+candidate[:z]
         if actual(candidate) >= actual(s)-1e-9:
-            raise RuntimeError("3-opt 增量评估与完整有向路径成本不一致")
+            raise RuntimeError('3-opt增量评估与完整有向路径成本不一致')
         s = candidate
     gain = original-actual(s)
+    if len(cache) >= 50000:
+        cache.clear()
     cache[key] = (tuple(s[1:]), gain)
+    cache[tuple(s[1:])] = (tuple(s[1:]), 0.)
     return s[1:], gain, gain > 1e-9, False
 
 
@@ -136,31 +172,38 @@ def solve_fa3aco_gtsp(nodes, params, seed=42):
         raise ValueError("至少需要一个子区")
     rng = np.random.RandomState(seed)
     tau = np.where(np.isfinite(cost), tau0, 0.)
-    history, convergence, cache = [], [], {}
+    # A view of preallocated history avoids copying all previous matrices every iteration.
+    history = np.empty((iterations, n, n)) if fractional and mode == 1 else None
+    convergence, cache = [], {}
+    same_group = group_of[:, None] == group_of[None, :]
     rev = build_reverse_node_map(nodes) if local else None
     coeffs = gruenwald_letnikov_coeffs(order, G)
     best, best_value, best_it = None, math.inf, -1
     improvements = hits = 0
     rho_start = rho_end = None
     for it in range(iterations):
+        checkpoint("FA3ACO迭代", it+1, iterations, force=(it == 0))
         rho = evaporation_rate(it, rmin, rmax, decay) if adaptive else fixed
         if it == 0:
             rho_start = rho
         rho_end = rho
         effective = tau
-        if fractional and mode == 1 and history:
-            effective = tau + memory_strength*fractional_pheromone_integral(history, order)
+        if fractional and mode == 1 and it:
+            effective = tau + memory_strength*fractional_pheromone_integral(history[:it], order)
+        log_scores = transition_log_scores(effective, cost, alpha, beta)
         tours = []
-        for _ in range(ants):
+        for ant in range(ants):
+            checkpoint(f"FA3ACO 第{it+1}/{iterations}代：构建/3-opt蚂蚁", ant+1, ants)
             start = int(rng.randint(n))
-            route, visited = [start], {int(group_of[start])}
-            while len(visited) < G:
-                cand = np.flatnonzero(~np.isin(group_of, list(visited)))
+            route = [start]
+            available = ~same_group[start].copy()
+            for _ in range(G-1):
+                cand = np.flatnonzero(available)
                 cur = route[-1]
-                prob = transition_probabilities(effective[cur, cand], cost[cur, cand], alpha, beta)
+                prob = probabilities_from_logs(log_scores[cur, cand])
                 if fractional and mode == 0 and len(route) > 1:
                     for k, h in enumerate(reversed(route[:-1]), 1):
-                        prob += coeffs[k-1]*transition_probabilities(tau[h, cand], cost[h, cand], alpha, beta)
+                        prob += coeffs[k-1]*probabilities_from_logs(log_scores[h, cand])
                     if np.any(prob < -1e-12) or not np.isfinite(prob.sum()) or prob.sum() <= 0:
                         raise ValueError("Wu Eq.16 原式产生负转移概率；原文未给出合法化规则。"
                                          "fractional_mode=1 可选择作者公开的历史信息素积分实现，"
@@ -169,7 +212,7 @@ def solve_fa3aco_gtsp(nodes, params, seed=42):
                     prob /= prob.sum()
                 nxt = int(rng.choice(cand, p=prob))
                 route.append(nxt)
-                visited.add(int(group_of[nxt]))
+                available[same_group[nxt]] = False
             z = route.index(0)
             internal = (route[z:]+route[:z])[1:]
             if local:
@@ -187,8 +230,9 @@ def solve_fa3aco_gtsp(nodes, params, seed=42):
             for a, b in zip(route, route[1:]+route[:1]):
                 tau[a, b] += Q/max(value, 1e-12)
         if fractional and mode == 1:
-            history.append(tau.copy())
+            history[it] = tau
         convergence.append(best_value)
+    checkpoint("FA3ACO迭代完成", iterations, iterations, force=True)
     validate_visit(nodes, best)
     inside = sum(nodes[j].internal_distance for j in best)
     return best, convergence, {

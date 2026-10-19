@@ -5,11 +5,11 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from compare.metrics import summarize_run
+from compare.metrics import summarize_run, successful_run
 
 
 def stats_of(values: List[float]) -> dict:
-    vals = [float(v) for v in values if v is not None]
+    vals = [float(v) for v in values if v is not None and math.isfinite(float(v))]
     if not vals:
         return {"mean": float("nan"), "std": float("nan"),
                 "min": float("nan"), "max": float("nan")}
@@ -27,6 +27,8 @@ def build_comparison_table(runs_by_algo: Dict[str, List[dict]],
     列 = 算法。
     """
     rows = {}
+    runs_by_algo = {name: [run for run in runs if successful_run(run)]
+                    for name, runs in runs_by_algo.items()}
     metric_labels = {
         ("total_distance", "mean"): "总距离均值 (m)",
         ("total_distance", "std"): "总距离标准差",

@@ -19,12 +19,13 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QWidget, QApplication)
 
 from core.base_algorithm import CameraParams
+from compare.metrics import successful_run
 from core.experiment_record import ExperimentRecorder
 from core.experiment_runner import ExperimentRunner
 from core.registry import AlgorithmRegistry
 from config.app_settings import AppSettings
 from config.default_params import (ALGORITHM_DEFAULTS, ALGORITHM_META,
-                                   APP_NAME, APP_VERSION, BASE_DIR,
+                                   APP_NAME, APP_VERSION, BASE_DIR, RESOURCE_DIR,
                                    CAMERA_DEFAULTS, EXPERIMENT_DIR,
                                    PLUGIN_DIR, PROJECT_DIR)
 from data.coord_transform import CoordTransform
@@ -56,9 +57,10 @@ class RunWorker(QObject):
     @Slot()
     def run(self):
         try:
-            results = self._runner.run_jobs(
+            results = self._runner.run_jobs_isolated(
                 self._jobs,
-                progress=lambda d, t, m: self.progress.emit(d, t, m))
+                progress=lambda d, t, m: self.progress.emit(d, t, m),
+                reset_cancel=False)
             self.finished.emit(results)
         except Exception as e:
             self.failed.emit(f"{type(e).__name__}: {e}\n{traceback.format_exc()}")
@@ -279,7 +281,7 @@ class MainWindow(QMainWindow):
         m_exp.addAction(self._act("运行批量比较(&B)...",
                                   lambda: self.run_experiment("batch")))
         m_exp.addSeparator()
-        m_exp.addAction(self._act("终止当前实验(&T)", self.runner.cancel))
+        m_exp.addAction(self._act("终止当前实验(&T)", self._stop_experiment))
         m_exp.addAction(self._act("清除实验结果(&C)", self._clear_results, "F5"))
         m_exp.addAction(self._act("恢复默认参数(&D)", self._reset_all_params))
 
@@ -479,7 +481,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"卫星底图已加载：{os.path.basename(img_path)}", 6000)
     def _load_sample_data(self):
-        sample = os.path.join(BASE_DIR, "data", "samples", "示例农田.kml")
+        sample = os.path.join(RESOURCE_DIR, "data", "samples", "示例农田.kml")
         if not os.path.exists(sample):
             QMessageBox.information(self, "提示", "未找到示例数据文件：\n" + sample)
             return
@@ -626,6 +628,7 @@ class MainWindow(QMainWindow):
         self._start_worker(jobs, mode, seeds, camera)
 
     def _start_worker(self, jobs, mode, seeds, camera):
+        self.runner.prepare()
         self.experiment_panel.set_running(True)
         self.algo_panel.btn_run.setEnabled(False)
         self.sb_progress.setVisible(True)
@@ -679,8 +682,11 @@ class MainWindow(QMainWindow):
             seeds=seeds, project_name=self.project.name)
         self.right_tabs.setCurrentWidget(self.compare_panel)
         self.statusBar().showMessage(
-            f"实验完成：{jobs_desc(mode)}，记录：{rec_path}", 8000)
-        self.sb_stage.setText("完成")
+            f"{'实验已终止' if self.runner.cancelled else '实验完成'}：{jobs_desc(mode)}，记录：{rec_path}", 8000)
+        has_failures = any(run.get('error') for values in results.values()
+                           for runs in values.values() for run in runs)
+        self.sb_stage.setText("已终止" if self.runner.cancelled else
+                              "完成（部分算法失败，见结果说明）" if has_failures else "完成")
 
     def _show_canvas_results(self, results):
         """在活动数据集上叠加各算法最优运行。"""
@@ -689,6 +695,7 @@ class MainWindow(QMainWindow):
             return
         best_by_algo = {}
         for algo, runs in results[ds.name].items():
+            runs = [run for run in runs if successful_run(run)]
             if runs:
                 best_by_algo[algo] = min(
                     runs, key=lambda r: r.get("total_distance", float("inf")))
@@ -701,6 +708,7 @@ class MainWindow(QMainWindow):
         runs_by_algo = results[ds.name]
         for algo in self.algo_panel.selected_names():
             runs = runs_by_algo.get(algo) or []
+            runs = [run for run in runs if successful_run(run)]
             if runs:
                 best = min(runs, key=lambda r: r.get("total_distance",
                                                      float("inf")))
@@ -934,8 +942,12 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if self._thread is not None:
             self.runner.cancel()
-            self._thread.quit()
-            self._thread.wait(3000)
+            # Coordinator polls every50ms and kills a non-cooperating child.
+            # Never destroy a running QThread or block the GUI for seconds.
+            self._thread.finished.connect(self.close)
+            self.sb_stage.setText("正在停止计算并关闭…")
+            event.ignore()
+            return
         super().closeEvent(event)
 
 

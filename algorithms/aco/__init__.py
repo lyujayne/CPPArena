@@ -13,6 +13,7 @@ from algorithms.aco.polygon_decomp import convex_decompose
 from algorithms.aco.boustrophedon import (plan_region_variants, RegionCoverPlan,
                                         coverage_geometry, choose_sweep_direction)
 from algorithms.aco.aco_gtsp import GTSPNode, solve_aco_gtsp, validate_visit
+from core.execution_control import checkpoint, progress_scope
 
 
 class ACOGTSPAlgorithm(BaseCPPAlgorithm):
@@ -66,8 +67,10 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
         subregion_counts = {}
         decomp_info = []
         region_convex_polys = {}
-        for region in cpp_input.regions:
-            convex_parts, seg_info = self.decompose_region(region.vertices, params)
+        for region_number, region in enumerate(cpp_input.regions, 1):
+            checkpoint(f"分割区域：{region.name}", force=True)
+            with progress_scope(f"区域{region_number}/{len(cpp_input.regions)}（{region.name}）"):
+                convex_parts, seg_info = self.decompose_region(region.vertices, params)
             from shapely.ops import unary_union
             original = Polygon(region.vertices)
             part_polys = [Polygon(p) for p in convex_parts]
@@ -81,6 +84,7 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
             region_convex_polys[region.id] = convex_parts
             plans_by_sub = []
             for sub_idx, sub_pts in enumerate(convex_parts):
+                checkpoint("生成扫描并验证足迹", sub_idx+1, len(convex_parts))
                 variants = self.plan_subregion(sub_pts, line_spacing)
                 if not variants:
                     raise RuntimeError(f"区域「{region.name}」无法生成覆盖路径")
@@ -124,6 +128,7 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
                     node_by_sub.setdefault(sub_id_counter, []).append(nd)
                 sub_id_counter += 1
 
+        checkpoint("区域分割/扫描已完成，进入区域连接求解", force=True)
         visit, convergence, stats = self.solve_region_order(
             nodes, params, seed)
         validate_visit(nodes, visit)
@@ -136,6 +141,7 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
         waypoints = [launch]
         seq_order = 0
         for nd_idx in visit:
+            checkpoint()
             nd = nodes[nd_idx]
             if nd.region_id < 0:
                 continue

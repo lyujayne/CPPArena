@@ -22,6 +22,7 @@ Python 库 "poly_decomp"（PyPI: poly_decomp 0.0.1），该库为 Mark Bayazit
 """
 import math
 import random
+from core.execution_control import checkpoint
 from typing import List, Optional, Tuple
 
 XY = Tuple[float, float]
@@ -159,6 +160,7 @@ def _quick_decomp(poly: List[XY], result: List[List[XY]],
     if len(poly) < 3:
         return result
     level += 1
+    checkpoint("Bayazit区域分割")
     if level > maxlevel:
         raise RuntimeError("Bayazit 超过递归深度上限，未输出遗漏区域的分割")
     n_poly = len(poly)

@@ -8,6 +8,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 import numpy as np
+from core.execution_control import checkpoint
 
 XY = Tuple[float, float]
 INF = float("inf")
@@ -41,7 +42,18 @@ def transition_probabilities(tau, distances, alpha, beta):
     distances = np.asarray(distances, dtype=float)
     if np.any(~np.isfinite(distances)) or np.any(tau < 0):
         raise ValueError("状态转移包含不可行边或负信息素")
-    logs = alpha*np.log(np.maximum(tau, 1e-300)) - beta*np.log(np.maximum(distances, 1e-12))
+    logs = transition_log_scores(tau, distances, alpha, beta)
+    return probabilities_from_logs(logs)
+
+
+def transition_log_scores(tau, distances, alpha, beta):
+    # Forbidden edges stay masked even when beta=0 (0*log(inf) is NaN).
+    with np.errstate(invalid='ignore'):
+        scores = alpha*np.log(np.maximum(tau, 1e-300)) - beta*np.log(np.maximum(distances, 1e-12))
+    return np.where(np.isfinite(distances), scores, -np.inf)
+
+
+def probabilities_from_logs(logs):
     weights = np.exp(logs - logs.max())
     return weights/weights.sum()
 
@@ -77,24 +89,28 @@ def solve_aco_gtsp(nodes: List[GTSPNode], params: Dict, seed: int = 42):
     cost = build_cost_matrix(nodes)
     group_of = np.array([n.subregion_id for n in nodes])
     G = len(set(group_of))
+    same_group = group_of[:, None] == group_of[None, :]
     tau = np.where(np.isfinite(cost), tau0, 0.0)
     best, best_cost, best_iteration = None, math.inf, -1
     convergence = []
     for it in range(iterations):
+        checkpoint("ACO迭代", it+1, iterations)
+        log_scores = transition_log_scores(tau, cost, alpha, beta)
         tours = []
         # 节点数只蚂蚁，每轮随机排列，使每个节点恰有一个起始蚂蚁。
         for start in rng.permutation(len(nodes)):
-            route, visited = [int(start)], {int(group_of[start])}
-            while len(visited) < G:
-                cand = np.flatnonzero(~np.isin(group_of, list(visited)))
+            route = [int(start)]
+            available = ~same_group[start].copy()
+            for _ in range(G-1):
+                cand = np.flatnonzero(available)
                 cur = route[-1]
                 if rng.random_sample() < random_prob:
                     nxt = int(rng.choice(cand))
                 else:
-                    prob = transition_probabilities(tau[cur, cand], cost[cur, cand], alpha, beta)
+                    prob = probabilities_from_logs(log_scores[cur, cand])
                     nxt = int(rng.choice(cand, p=prob))
                 route.append(nxt)
-                visited.add(int(group_of[nxt]))
+                available[same_group[nxt]] = False
             # 循环路径旋转到起飞点；保留随机起点构建的完整闭环。
             z = route.index(0)
             route = route[z:] + route[:z]

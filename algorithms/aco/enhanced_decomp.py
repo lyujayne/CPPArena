@@ -7,6 +7,7 @@
 不自动改用平分线，不输出凹片或遗失尚未处理的区域。
 """
 import math
+from core.execution_control import checkpoint
 from typing import Dict, List, Optional, Tuple
 
 from shapely.geometry import Polygon as _ShPolygon
@@ -83,6 +84,7 @@ def _best_cut(poly: List[XY]
     records: list = []
 
     for i in reflex:
+        checkpoint("增强区域分割")
         lo, hi = reflex_wedge_bounds(poly, i)
         for j in range(n):
             ex = poly[(j + 1) % n][0] - poly[j][0]

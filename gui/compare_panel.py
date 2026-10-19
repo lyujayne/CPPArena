@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (QComboBox, QFileDialog, QGroupBox, QHBoxLayout,
 
 from compare import report_gen
 from compare.statistics import build_comparison_table
+from compare.metrics import successful_run
 from config.default_params import ALGORITHM_META, EXPERIMENT_DIR, APP_NAME
 from data.coord_transform import CoordTransform
 from data.waypoint_export import export_waypoints
@@ -62,6 +63,11 @@ class ComparePanel(QWidget):
         self.btn_wp.clicked.connect(self.export_waypoints)
         top.addWidget(self.btn_wp)
         v.addLayout(top)
+        self.failure_label = QLabel('')
+        self.failure_label.setWordWrap(True)
+        self.failure_label.setStyleSheet('color:#a33;')
+        self.failure_label.setVisible(False)
+        v.addWidget(self.failure_label)
 
         ops = QHBoxLayout()
         self.btn_latex = QPushButton("导出 LaTeX")
@@ -161,7 +167,9 @@ class ComparePanel(QWidget):
 
     def _active_runs(self) -> dict:
         name = self.ds_combo.currentData()
-        return self._results.get(name, {}) if name else {}
+        raw = self._results.get(name, {}) if name else {}
+        return {algo: valid for algo, runs in raw.items()
+                if (valid := [run for run in runs if successful_run(run)])}
 
     def _on_ds_changed(self, *_):
         self._refresh_waypoint_algos()
@@ -177,6 +185,11 @@ class ComparePanel(QWidget):
 
     # ------------------------------------------------------------ 重建
     def rebuild(self):
+        name = self.ds_combo.currentData()
+        errors = [f"{algo}：{run['error']}" for algo, runs in self._results.get(name, {}).items()
+                  for run in runs if run.get('error')]
+        self.failure_label.setText('\n'.join(errors))
+        self.failure_label.setVisible(bool(errors))
         self._rebuild_table()
         self._rebuild_convergence()
         self._rebuild_stats()
