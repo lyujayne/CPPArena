@@ -52,6 +52,7 @@ def fetch_satellite_basemap(
     lon_max: float, lat_max: float,
     out_path: Optional[str] = None,
     progress_cb=None,
+    cancelled=None,
 ) -> Tuple[str, Tuple[float, float, float, float]]:
     """下载并拼接卫星瓦片。
 
@@ -87,8 +88,10 @@ def fetch_satellite_basemap(
             url = TILE_URL.format(z=z, y=ty, x=tx)
             r = None
             for attempt in range(3):
+                if cancelled and cancelled():
+                    raise RuntimeError('底图加载已取消')
                 try:
-                    r = sess.get(url, headers=HEADERS, timeout=20)
+                    r = sess.get(url, headers=HEADERS, timeout=(3, 5))
                     if r.status_code == 200:
                         break
                 except requests.RequestException:

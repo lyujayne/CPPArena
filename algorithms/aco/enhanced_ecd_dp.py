@@ -11,10 +11,10 @@ from algorithms.aco.boustrophedon import plan_region_variants
 
 class EnhancedECDDPAlgorithm(ACOGTSPAlgorithm):
     name = "Enhanced-ECD-DP"
-    display_name = "增强精确单元分解-DP（Li 邻接开放遍历）"
-    description = ("Li 2011增强分割及邻接图开放遍历DP：仅相邻子区可连接，"
-                   "可指定起始和结束子区，采用宽度支撑线上的边界连接点。"
-                   "起降航段不参与论文连接目标；超上限或不存在遍历时明确报错。")
+    display_name = "增强精确单元分解-DP（开放转场 / 严格邻接可选）"
+    description = ("增强分割与开放遍历DP：默认通用转场，允许不相邻子区之间飞行；"
+                   "转场约束设为1时使用Li论文的严格邻接图。通用模式是工程扩展，"
+                   "可指定起终子区，采用宽度支撑线连接点；起降段不参与连接目标。")
     default_params = ALGORITHM_DEFAULTS["Enhanced-ECD-DP"]
     deterministic = True   # 分解与 DP 连接均为确定性
 
@@ -28,12 +28,14 @@ class EnhancedECDDPAlgorithm(ACOGTSPAlgorithm):
         return solve_li_dp_connection(nodes, params=params, seed=seed)
 
     def plan_subregion(self, vertices, line_spacing):
-        return plan_region_variants(vertices, line_spacing, boundary_joints=True)
+        return plan_region_variants(vertices, line_spacing, boundary_joints=True,
+                                    boundary_mode=self._scan_boundary_mode)
 
     def get_param_spec(self):
         """参数面板：该精确算法无随机参数，仅暴露 DP 兜底阈值。"""
         d = self.default_params
         return [
+            ("li_adjacency_mode", "转场约束（0通用转场 / 1严格论文邻接）", "int", int(d['li_adjacency_mode'])),
             ("dp_max_groups", "精确DP子区上限(超过报错)", "int",
              int(d["dp_max_groups"])),
             ("li_start_group", "起始子区编号(0=自动选择)", "int", int(d["li_start_group"])),

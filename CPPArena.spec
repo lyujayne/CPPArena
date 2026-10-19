@@ -70,7 +70,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="CPPArena",
+    name="CPPArena-v2.1",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -80,4 +80,5 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     icon="assets/app_icon.ico",
+    version="version_info.txt",
 )

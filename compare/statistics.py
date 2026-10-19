@@ -9,7 +9,14 @@ from compare.metrics import summarize_run, successful_run
 
 
 def stats_of(values: List[float]) -> dict:
-    vals = [float(v) for v in values if v is not None and math.isfinite(float(v))]
+    vals = []
+    for value in values:
+        try:
+            number = float(value)
+            if math.isfinite(number):
+                vals.append(number)
+        except (TypeError, ValueError):
+            continue
     if not vals:
         return {"mean": float("nan"), "std": float("nan"),
                 "min": float("nan"), "max": float("nan")}
@@ -41,6 +48,10 @@ def build_comparison_table(runs_by_algo: Dict[str, List[dict]],
 
     for label in metric_labels.values():
         rows[label] = {}
+    for label in ('有效运行次数', '扫描足迹覆盖率均值 (%)', '扫描足迹覆盖率最低 (%)', '未覆盖面积均值 (m²)',
+                  '子区域转运距离均值 (m)', '区域外航程均值 (m)', '冗余率均值 (%)',
+                  '扫描换行次数均值', '非扫描航程均值 (m)'):
+        rows[label] = {}
 
     # 相对基线改善率
     imp_label = "相对基线距离改善率 (%)"
@@ -49,9 +60,26 @@ def build_comparison_table(runs_by_algo: Dict[str, List[dict]],
     for algo, runs in runs_by_algo.items():
         if not runs:
             continue
-        dists = [r["total_distance"] for r in runs]
-        turns = [r["total_turns"] for r in runs]
-        runtimes = [r["runtime"] for r in runs]
+        dists = [r.get("total_distance") for r in runs]
+        turns = [r.get("total_turns") for r in runs]
+        runtimes = [r.get("runtime") for r in runs]
+        rows['有效运行次数'][algo] = len(runs)
+        coverage = [(r.get('metadata') or {}).get('coverage', {}) for r in runs]
+        ratios = [c['covered_ratio'] for c in coverage if c.get('covered_ratio') is not None]
+        missed = [c['uncovered_area_m2'] for c in coverage if c.get('uncovered_area_m2') is not None]
+        if ratios:
+            rows['扫描足迹覆盖率均值 (%)'][algo] = round(stats_of(ratios)['mean']*100, 4)
+            rows['扫描足迹覆盖率最低 (%)'][algo] = round(float(min(ratios))*100, 4)
+        if missed:
+            rows['未覆盖面积均值 (m²)'][algo] = round(stats_of(missed)['mean'], 4)
+        from compare.route_metrics import compute_route_metrics
+        route_metrics = [(r.get('metadata') or {}).get('route_metrics') or compute_route_metrics(r) for r in runs]
+        for key, label in (('subregion_transfer_m', '子区域转运距离均值 (m)'),
+                           ('outside_distance_m', '区域外航程均值 (m)'),
+                           ('redundancy_pct', '冗余率均值 (%)'),
+                           ('sweep_reversals', '扫描换行次数均值'),
+                           ('non_scan_distance_m', '非扫描航程均值 (m)')):
+            rows[label][algo] = round(stats_of([m.get(key) for m in route_metrics])['mean'], 2)
         sd, st = stats_of(dists), stats_of(turns)
         rows[metric_labels[("total_distance", "mean")]][algo] = round(sd["mean"], 2)
         rows[metric_labels[("total_distance", "std")]][algo] = round(sd["std"], 2)

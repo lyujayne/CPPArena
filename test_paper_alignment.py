@@ -265,7 +265,8 @@ def test_stochastic_solvers_visit_all_groups_and_reproduce(solver):
 
 @pytest.mark.parametrize('algorithm', [ACOGTSPAlgorithm, EnhancedECDDPAlgorithm])
 def test_end_to_end_triangle_coverage_and_objective(algorithm):
-    cam = CameraParams()
+    # The legacy envelope mode intentionally allows endpoints outside the cell.
+    cam = CameraParams(scan_boundary_mode='envelope')
     tri = [(0, 0), (1000, 0), (0, 90)]
     inp = CPPInput([Region(1, 'triangle', tri)], (-10, -10), cam)
     r = algorithm().solve(inp, max_iterations=3)

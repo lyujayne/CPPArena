@@ -1,137 +1,338 @@
-# -*- coding: utf-8 -*-
-"""实验控制面板：运行模式、种子管理、进度控制。"""
+"""Combination manager with independent parameters and live experiment log."""
+from datetime import datetime
+import time
 import random
-from typing import List
-
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (QComboBox, QGroupBox, QHBoxLayout, QLabel,
-                               QLineEdit, QProgressBar, QPushButton,
-                               QRadioButton, QVBoxLayout, QWidget)
+import re
+from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
+    QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar,
+    QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget)
+from core.combinations import (Combination, DECOMPOSITIONS, PLANNERS,
+                               component_spec, enumerate_combinations)
 
 
 class ExperimentPanel(QWidget):
-    """实验调度控制。"""
-
-    run_requested = Signal(str)      # mode
+    run_requested = Signal(str)
     stop_requested = Signal()
-
-    MODES = {
-        "single": "单算法单次运行（快速验证）",
-        "repeated": "单算法多次运行（统计稳定性）",
-        "batch": "批量比较（算法×数据集×种子）",
-    }
+    export_requested = Signal()
+    component_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._build_ui()
-
-    def _build_ui(self):
-        v = QVBoxLayout(self)
-        v.setContentsMargins(4, 4, 4, 4)
-
-        g = QGroupBox("运行模式")
-        gv = QVBoxLayout(g)
-        self.mode_combo = QComboBox()
-        for key, label in self.MODES.items():
-            self.mode_combo.addItem(label, key)
-        gv.addWidget(self.mode_combo)
-        v.addWidget(g)
-
-        g2 = QGroupBox("随机种子（可复现性）")
-        g2v = QVBoxLayout(g2)
-        row = QHBoxLayout()
-        self.seeds_edit = QLineEdit("42")
-        self.seeds_edit.setPlaceholderText("如: 42, 7, 123 或 1-10")
-        row.addWidget(self.seeds_edit, 1)
-        btn_gen = QPushButton("生成")
-        btn_gen.clicked.connect(self._gen_seeds)
-        row.addWidget(btn_gen)
-        g2v.addLayout(row)
-        hint = QLabel("支持逗号分隔或区间（如 1-10 表示 1..10）")
-        hint.setStyleSheet("color:#888;font-size:10px;")
-        g2v.addWidget(hint)
-        v.addWidget(g2)
-
-        g3 = QGroupBox("运行控制")
-        g3v = QVBoxLayout(g3)
-        row2 = QHBoxLayout()
-        self.btn_run = QPushButton("▶ 运行实验")
-        self.btn_run.setStyleSheet(
-            "QPushButton{background:#16a34a;color:white;font-weight:bold;"
-            "padding:8px;border-radius:4px;}"
-            "QPushButton:disabled{background:#aaa;}")
-        self.btn_run.clicked.connect(lambda: self.run_requested.emit(self.mode()))
-        self.btn_stop = QPushButton("■ 终止")
-        self.btn_stop.setEnabled(False)
-        self.btn_stop.clicked.connect(self.stop_requested)
-        row2.addWidget(self.btn_run, 2)
-        row2.addWidget(self.btn_stop, 1)
-        g3v.addLayout(row2)
-        self.progress = QProgressBar()
-        self.progress.setValue(0)
-        g3v.addWidget(self.progress)
-        self.status_label = QLabel("就绪")
-        self.status_label.setStyleSheet("color:#444;font-size:11px;")
-        g3v.addWidget(self.status_label)
-        v.addWidget(g3)
-
-        v.addStretch(1)
-
-    def mode(self) -> str:
-        return self.mode_combo.currentData()
-
-    def set_mode(self, mode: str):
-        idx = self.mode_combo.findData(mode)
-        if idx >= 0:
-            self.mode_combo.setCurrentIndex(idx)
-
-    def seeds(self) -> List[int]:
-        text = self.seeds_edit.text().strip()
-        if not text:
-            return [42]
-        seeds: List[int] = []
-        for part in text.replace("，", ",").split(","):
-            part = part.strip()
-            if not part:
-                continue
-            if "-" in part and part.count("-") == 1:
-                a, b = part.split("-")
-                try:
-                    seeds.extend(range(int(a), int(b) + 1))
-                except ValueError:
-                    continue
+        self.combinations = []
+        self.datasets = []
+        self._last_done = -1
+        self._last_log_update = 0
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        self.configuration = QWidget()
+        body = QVBoxLayout(self.configuration)
+        body.setContentsMargins(0, 0, 0, 0)
+        self.decomp_checks, self.planner_checks = {}, {}
+        choices = QHBoxLayout()
+        for title, catalog, target in (("① 选择分割方法", DECOMPOSITIONS, self.decomp_checks),
+                                       ("② 选择路径规划", PLANNERS, self.planner_checks)):
+            box = QGroupBox(title)
+            box_layout = QVBoxLayout(box)
+            for key, (label, _) in catalog.items():
+                check = QCheckBox(label)
+                check.setChecked(True)
+                target[key] = check
+                box_layout.addWidget(check)
+            choices.addWidget(box)
+            if target is self.decomp_checks:
+                self.decomposition_layout = box_layout
             else:
-                try:
-                    seeds.append(int(part))
-                except ValueError:
-                    continue
-        seeds = list(dict.fromkeys(seeds))
-        return seeds or [42]
+                self.planning_layout = box_layout
+        body.addLayout(choices)
+        module_row = QHBoxLayout()
+        for text, kind in (('新增分割方法', 'decomposition'), ('新增路径规划算法', 'planning')):
+            button = QPushButton(text)
+            button.clicked.connect(lambda checked=False, k=kind: self.component_requested.emit(k))
+            module_row.addWidget(button)
+        body.addLayout(module_row)
+        actions = QHBoxLayout()
+        self.btn_enumerate = QPushButton("穷举组合")
+        self.btn_enumerate.clicked.connect(self.enumerate)
+        add = QPushButton("添加组合")
+        add.clicked.connect(self.add_dialog)
+        remove = QPushButton("删除所选")
+        remove.clicked.connect(self.remove_selected)
+        for button in (self.btn_enumerate, add, remove):
+            actions.addWidget(button)
+        body.addLayout(actions)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["分割", "规划", "独立参数", "数据集"])
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setMinimumHeight(290)
+        body.addWidget(self.table)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("种子"))
+        self.seeds_edit = QLineEdit("42")
+        self.seeds_edit.setToolTip("逗号分隔或区间，如 42,7 或 1-10；每组合对每个种子运行一次")
+        row.addWidget(self.seeds_edit)
+        random_button = QPushButton('随机多个')
+        random_button.setToolTip('按下方数量生成互不重复的随机种子；生成后保留完整列表，可复现实验。')
+        random_button.clicked.connect(self.randomize_seeds)
+        row.addWidget(random_button)
+        body.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(QLabel('随机数量'))
+        self.random_seed_count = QSpinBox()
+        self.random_seed_count.setRange(2, 1000)
+        self.random_seed_count.setValue(10)
+        row.addWidget(self.random_seed_count)
+        self.scope_combo = QComboBox()
+        self.scope_combo.addItem("当前数据集", "active")
+        self.scope_combo.addItem("全部数据集", "all")
+        row.addWidget(self.scope_combo)
+        body.addLayout(row)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.configuration)
+        layout.addWidget(scroll, 1)
+        row = QHBoxLayout()
+        self.btn_run = QPushButton("运行组合清单")
+        self.btn_run.setObjectName("PrimaryButton")
+        self.btn_run.clicked.connect(lambda: self.run_requested.emit("combinations"))
+        self.btn_stop = QPushButton("终止")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self.stop_requested.emit)
+        row.addWidget(self.btn_run)
+        row.addWidget(self.btn_stop)
+        layout.addLayout(row)
+        self.progress = QProgressBar()
+        layout.addWidget(self.progress)
+        log_box = QGroupBox("实验日志", self)
+        self.log_box = log_box
+        log_box.hide()
+        log_box.setMaximumHeight(190)
+        log_layout = QVBoxLayout(log_box)
+        self.status_label = QLabel("就绪 · 请穷举或添加组合")
+        self.status_label.setWordWrap(True)
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.document().setMaximumBlockCount(10000)
+        self.log.setMinimumHeight(100)
+        log_layout.addWidget(self.status_label)
+        log_layout.addWidget(self.log)
+        row = QHBoxLayout()
+        self.btn_export = QPushButton("完整导出实验")
+        self.btn_export.clicked.connect(self.export_requested.emit)
+        row.addWidget(self.btn_export)
+        layout.addLayout(row)
 
-    def set_seeds_text(self, seeds: List[int]):
-        self.seeds_edit.setText(", ".join(str(s) for s in seeds))
-
-    def _gen_seeds(self):
-        n, ok = self._ask_count()
-        if not ok:
+    def enumerate(self):
+        selected_d = [k for k, c in self.decomp_checks.items() if c.isChecked()]
+        selected_p = [k for k, c in self.planner_checks.items() if c.isChecked()]
+        if not selected_d or not selected_p:
+            QMessageBox.warning(self, "选择模块", "请至少选择一种分割方法和一种规划算法。")
             return
-        rnd = random.Random()
-        seeds = sorted(rnd.sample(range(1, 100000), n))
-        self.set_seeds_text(seeds)
+        old = {(c.decomposition, c.planning): c for c in self.combinations}
+        self.combinations = [old.get((c.decomposition, c.planning), c)
+                             for c in enumerate_combinations(selected_d, selected_p)]
+        self.refresh_table()
+        self.status_label.setText(f'已列出 {len(self.combinations)} 个组合；运行时仅执行清单中保留的任务。')
 
-    def _ask_count(self):
-        from PySide6.QtWidgets import QInputDialog
-        n, ok = QInputDialog.getInt(self, "生成种子", "生成数量：", 3, 1, 100)
-        return n, ok
+    def refresh_table(self):
+        self.table.setRowCount(len(self.combinations))
+        for i, combo in enumerate(self.combinations):
+            for j, text in enumerate((combo.decomposition, combo.planning)):
+                item = QTableWidgetItem(text)
+                item.setToolTip(combo.label)
+                self.table.setItem(i, j, item)
+            button = QPushButton("参数设置" + (" •" if combo.decomposition_params or combo.planning_params else ""))
+            button.clicked.connect(lambda checked=False, c=combo: self.edit_params(c))
+            self.table.setCellWidget(i, 2, button)
+            datasets = QPushButton('全局范围' if combo.dataset_ids is None else f'{len(combo.dataset_ids)} 个数据集')
+            datasets.setToolTip('为此组合独立勾选数据集；全局范围使用当前/全部数据集设置。')
+            datasets.clicked.connect(lambda checked=False, c=combo: self.edit_datasets(c))
+            self.table.setCellWidget(i, 3, datasets)
 
-    # ---------------- 运行状态 ----------------
-    def set_running(self, running: bool):
+    def set_datasets(self, datasets):
+        self.datasets = list(datasets)
+
+    def refresh_modules(self):
+        for catalog, checks, layout in ((DECOMPOSITIONS, self.decomp_checks, self.decomposition_layout),
+                                         (PLANNERS, self.planner_checks, self.planning_layout)):
+            for key, (label, _) in catalog.items():
+                if key not in checks:
+                    check = QCheckBox(label)
+                    check.setChecked(True)
+                    layout.addWidget(check)
+                    checks[key] = check
+                else:
+                    checks[key].setText(label)
+
+    def edit_datasets(self, combo):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(combo.label + ' · 选择数据集')
+        dialog.resize(560, 430)
+        layout = QVBoxLayout(dialog)
+        inherit = QCheckBox('使用全局范围（当前 / 全部数据集）')
+        inherit.setChecked(combo.dataset_ids is None)
+        layout.addWidget(inherit)
+        listing = QListWidget()
+        for ds in self.datasets:
+            item = QListWidgetItem(ds.name)
+            item.setData(Qt.UserRole, ds.id)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if combo.dataset_ids is None or ds.id in combo.dataset_ids else Qt.Unchecked)
+            listing.addItem(item)
+        listing.setEnabled(not inherit.isChecked())
+        inherit.toggled.connect(lambda on: listing.setEnabled(not on))
+        layout.addWidget(listing)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        def accept():
+            ids = [listing.item(i).data(Qt.UserRole) for i in range(listing.count()) if listing.item(i).checkState() == Qt.Checked]
+            if not inherit.isChecked() and not ids:
+                QMessageBox.warning(dialog, '数据集为空', '请至少选择一个数据集。')
+                return
+            combo.dataset_ids = None if inherit.isChecked() else ids
+            dialog.accept()
+        buttons.accepted.connect(accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.Accepted:
+            self.refresh_table()
+
+    def add_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("添加组合（可重复添加，分别设置参数）")
+        dialog.setMinimumSize(640, 320)
+        dialog.resize(760, 370)
+        form = QFormLayout(dialog)
+        form.setContentsMargins(28, 24, 28, 24)
+        form.setVerticalSpacing(24)
+        form.addRow(QLabel('选择分割方法与路径规划算法；添加后可单独设置此组合参数。'))
+        d, p = QComboBox(), QComboBox()
+        d.setMinimumHeight(38)
+        p.setMinimumHeight(38)
+        for widget, catalog in ((d, DECOMPOSITIONS), (p, PLANNERS)):
+            for key, (label, _) in catalog.items():
+                widget.addItem(label, key)
+        form.addRow("分割方法", d)
+        form.addRow("规划算法", p)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText('添加组合')
+        buttons.button(QDialogButtonBox.Cancel).setText('取消')
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() == QDialog.Accepted:
+            self.combinations.append(Combination(d.currentData(), p.currentData()))
+            self.refresh_table()
+
+    def remove_selected(self):
+        for row in sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True):
+            del self.combinations[row]
+        self.refresh_table()
+
+    def edit_params(self, combo):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(combo.label + " · 参数仅对本组合生效")
+        dialog.resize(520, 620)
+        layout = QVBoxLayout(dialog)
+        host = QWidget()
+        form = QFormLayout(host)
+        widgets = {}
+        for kind, key, values in (("decomposition", combo.decomposition, combo.decomposition_params),
+                                   ("planning", combo.planning, combo.planning_params)):
+            form.addRow(QLabel("分割参数" if kind == "decomposition" else "规划参数"))
+            spec = component_spec(kind, key)
+            if not spec:
+                form.addRow(QLabel("此模块无可调参数"))
+            for name, label, typ, default in spec:
+                widget = QSpinBox() if typ == "int" else QDoubleSpinBox()
+                widget.setRange(0 if typ == "int" else -1e9, 1000000 if typ == "int" else 1e9)
+                if name == 'li_adjacency_mode':
+                    widget.setRange(0, 1)
+                if typ != "int":
+                    widget.setDecimals(8)
+                widget.setValue(values.get(name, default))
+                widget.setProperty("defaultValue", default)
+                form.addRow(label, widget)
+                widgets[(kind, name)] = widget
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(host)
+        layout.addWidget(scroll)
+        reset = QPushButton("恢复此组合默认参数")
+        reset.clicked.connect(lambda: [w.setValue(w.property("defaultValue")) for w in widgets.values()])
+        layout.addWidget(reset)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.Accepted:
+            combo.decomposition_params = {k: w.value() for (kind, k), w in widgets.items() if kind == "decomposition"}
+            combo.planning_params = {k: w.value() for (kind, k), w in widgets.items() if kind == "planning"}
+            self.refresh_table()
+
+    def seeds(self):
+        result = []
+        try:
+            for part in self.seeds_edit.text().replace("，", ",").split(","):
+                if "-" in part:
+                    a, b = map(int, part.split("-"))
+                    if not 0 <= a <= b < 2**32 or b-a >= 1000:
+                        raise ValueError()
+                    result.extend(range(a, b+1))
+                else:
+                    result.append(int(part.strip()))
+            if not result or len(result) > 1000 or any(s < 0 or s >= 2**32 for s in result):
+                raise ValueError()
+        except ValueError:
+            raise ValueError("种子须为 0～4294967295 的整数，支持逗号或递增区间（最多1000个）。")
+        return list(dict.fromkeys(result))
+
+    def set_seeds_text(self, seeds):
+        self.seeds_edit.setText(", ".join(map(str, seeds)))
+
+    def mode(self):
+        return "combinations"
+
+    def set_mode(self, mode):
+        pass  # Old projects open with the new workflow.
+
+    def randomize_seeds(self):
+        self.set_seeds_text(random.SystemRandom().sample(range(2**32), self.random_seed_count.value()))
+
+    def append_log(self, message, error=None):
+        if error is None:
+            error = bool(re.search(r'失败|报错|错误|Error|Exception|Traceback', message, re.I))
+        scrollbar = self.log.verticalScrollBar()
+        follow = scrollbar.value() >= scrollbar.maximum()-2
+        cursor = QTextCursor(self.log.document())
+        cursor.movePosition(QTextCursor.End)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor('#b91c1c' if error else '#22354b'))
+        if not self.log.document().isEmpty():
+            cursor.insertBlock()
+        cursor.insertText(f"{datetime.now():%H:%M:%S}  {message}", fmt)
+        if follow:
+            scrollbar.setValue(scrollbar.maximum())
+
+    def set_running(self, running):
+        self.configuration.setEnabled(not running)
         self.btn_run.setEnabled(not running)
         self.btn_stop.setEnabled(running)
+        self.btn_export.setEnabled(not running)
+        if running:
+            self._last_done = -1
+            self.log.clear()
+            self.append_log("实验开始：按清单依次执行组合")
 
-    def set_progress(self, done: int, total: int, msg: str = ""):
-        if total > 0:
-            self.progress.setMaximum(total)
-            self.progress.setValue(min(done, total))
-        if msg:
-            self.status_label.setText(msg)
+    def set_progress(self, done, total, msg=""):
+        self.progress.setRange(0, max(total, 1))
+        self.progress.setValue(done)
+        self.status_label.setText(msg)
+        if done != self._last_done or "启动计算进程" in msg or re.search(r'失败|报错|Error|Exception', msg, re.I):
+            self.append_log(msg)
+            self._last_log_update = time.monotonic()
+        self._last_done = done

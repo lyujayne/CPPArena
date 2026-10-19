@@ -28,6 +28,19 @@ Desktop.ini
 experiments/
 projects/
 *.log
+.pytest_cache/
+dataset_library/
+pictures/
+build_log*.txt
+
+# Generated verification artifacts; keep verification scripts in Git.
+/verification/*/
+/verification/*.json
+/verification/*.png
+/verification/*.jpg
+/verification/*.jpeg
+/verification/*.cppx
+/verification/*.zip
 
 # 用户数据（KML、图片底图等）
 data/samples/*.kml

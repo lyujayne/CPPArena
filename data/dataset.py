@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+from uuid import uuid4
 from typing import List, Optional, Tuple
 
 from core.base_algorithm import Region, CameraParams
@@ -17,6 +18,7 @@ class Dataset:
 
     def __init__(self, name: str = "数据集"):
         self.name = name
+        self.id = uuid4().hex
         self.regions: List[Region] = []
         self.launch_point: Optional[XY] = None
         self.epsg: int = 32650
@@ -30,6 +32,13 @@ class Dataset:
     def add_region(self, name: str, vertices: List[XY]) -> Region:
         if len(vertices) < 3:
             raise ValueError("多边形顶点数必须 ≥ 3")
+        from shapely.geometry import Polygon
+        import math
+        if any(not math.isfinite(float(v)) for p in vertices for v in p):
+            raise ValueError('坐标必须为有限数字')
+        polygon = Polygon(vertices)
+        if not polygon.is_valid or polygon.area <= 1e-8:
+            raise ValueError('多边形自交或面积为零，请重新勾绘')
         region = Region(id=self._next_region_id, name=name, vertices=list(vertices))
         self._next_region_id += 1
         self.regions.append(region)
@@ -91,6 +100,7 @@ class Dataset:
     def to_dict(self) -> dict:
         return {
             "name": self.name,
+            "id": self.id,
             "epsg": self.epsg,
             "regions": [r.to_dict() for r in self.regions],
             "launch_point": self.launch_point,
@@ -102,6 +112,7 @@ class Dataset:
     @classmethod
     def from_dict(cls, d: dict) -> "Dataset":
         ds = cls(name=d.get("name", "数据集"))
+        ds.id = str(d.get('id') or ds.id)
         ds.epsg = int(d.get("epsg", 32650))
         ds.launch_point = tuple(d["launch_point"]) if d.get("launch_point") else None
         for rd in d.get("regions", []):
@@ -125,11 +136,13 @@ class Project:
         self.seeds: List[int] = [42]
         self.experiment_mode: str = "single"
         self.name: str = "未命名工程"
+        self.combinations: list = []
 
     def to_dict(self) -> dict:
         return {
             "name": self.name,
-            "version": 1,
+            "version": "2.1",
+            "combinations": self.combinations,
             "camera": self.camera.as_dict(),
             "datasets": [ds.to_dict() for ds in self.datasets],
             "selected_algorithms": self.selected_algorithms,
@@ -142,6 +155,7 @@ class Project:
     def from_dict(cls, d: dict) -> "Project":
         p = cls()
         p.name = d.get("name", "未命名工程")
+        p.combinations = d.get('combinations', [])
         p.camera = CameraParams.from_dict(d.get("camera", {}))
         p.datasets = [Dataset.from_dict(x) for x in d.get("datasets", [])]
         p.selected_algorithms = d.get("selected_algorithms", [])

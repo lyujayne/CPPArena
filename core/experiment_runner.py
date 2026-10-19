@@ -10,6 +10,7 @@ import os
 import threading
 import time
 import traceback
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
@@ -78,7 +79,8 @@ def _start_process(process):
 def _failed_run(job, error, trace=''):
     return {'algorithm': job.algorithm, 'seed': job.seed, 'dataset': job.dataset.name,
             'error': error, 'traceback': trace, 'total_distance': float('nan'),
-            'total_turns': -1, 'runtime': 0., 'convergence': []}
+            'total_turns': -1, 'runtime': 0., 'convergence': [],
+            'combination': job.combination, 'params': job.params}
 
 
 @dataclass
@@ -90,6 +92,7 @@ class ExperimentJob:
     params: dict = field(default_factory=dict)
     camera: dict = field(default_factory=dict)   # 全局相机参数（公平比较）
     index: int = 0
+    combination: Optional[dict] = None
 
     def key(self) -> tuple:
         return (self.algorithm, self.dataset.name, self.seed)
@@ -160,6 +163,7 @@ class ExperimentRunner:
                 args=(job, list(self.registry._plugin_dirs), send, cancelled, self._timeout_per_job),
                 name='CPP-'+job.algorithm, daemon=True)
             started = time.monotonic()
+            started_at = datetime.now().astimezone().isoformat(timespec='milliseconds')
             value, stage, last_update = None, '启动/导入算法', 0.
             try:
                 _start_process(process)
@@ -216,9 +220,16 @@ class ExperimentRunner:
             if value is None:
                 value = _failed_run(job, '计算任务被终止，未返回完整结果')
             value['elapsed_total'] = round(time.monotonic()-started, 3)
+            value.setdefault('started_at', started_at)
+            value.setdefault('finished_at', datetime.now().astimezone().isoformat(timespec='milliseconds'))
+            if value.get('error'):
+                value['runtime'] = value['elapsed_total']
+                if job.combination:
+                    from core.combinations import Combination
+                    value['params'] = Combination(**job.combination).effective_params()
             results.setdefault(job.dataset.name, {}).setdefault(job.algorithm, []).append(value)
             if progress:
-                progress(index+1, total, label+('：完成' if 'error' not in value else '：'+value['error']))
+                progress(index+1, total, label+('：完成' if 'error' not in value else '：报错 '+value['error']))
         return results
 
     def run_jobs(self, jobs: List[ExperimentJob],
@@ -248,20 +259,20 @@ class ExperimentRunner:
             except ExperimentCancelled:
                 break
             except Exception as e:
-                run_dict = {
-                    "algorithm": job.algorithm, "seed": job.seed,
-                    "error": f"{type(e).__name__}: {e}",
-                    "traceback": traceback.format_exc(),
-                    "total_distance": float("nan"), "total_turns": -1,
-                    "runtime": 0.0, "convergence": [],
-                }
+                run_dict = _failed_run(job, f"{type(e).__name__}: {e}", traceback.format_exc())
+                run_dict['runtime'] = time.perf_counter() - t_start
             results.setdefault(job.dataset.name, {}).setdefault(job.algorithm, []).append(run_dict)
             if progress:
                 progress(idx + 1, total, "完成" if "error" not in run_dict else f"失败: {run_dict['error']}")
         return results
 
     def _run_single(self, job: ExperimentJob) -> dict:
-        algo = self.registry.get_instance(job.algorithm)
+        started_at = datetime.now().astimezone().isoformat(timespec='milliseconds')
+        if job.combination:
+            from core.combinations import ComposedAlgorithm
+            algo = ComposedAlgorithm(job.combination)
+        else:
+            algo = self.registry.get_instance(job.algorithm)
         from core.base_algorithm import CameraParams
         cam = CameraParams.from_dict(job.camera) if job.camera else CameraParams()
         cpp_input = CPPInput(
@@ -275,6 +286,7 @@ class ExperimentRunner:
         np.random.seed(job.seed)
 
         effective_params = dict(algo.default_params, **job.params)
+        effective_params['seed'] = job.seed
         result = algo.solve(cpp_input, **effective_params)
         from compare.metrics import summarize_run
         run_dict = summarize_run(result)
@@ -285,7 +297,17 @@ class ExperimentRunner:
         run_dict["internal_paths"] = result.internal_paths
         run_dict["subregion_sequence"] = result.subregion_sequence
         run_dict["metadata"] = result.metadata
+        from compare.metrics import path_length, count_turns
+        run_dict['total_distance'] = path_length(run_dict['waypoints'])
+        run_dict['total_turns'] = count_turns(run_dict['waypoints'])
+        from compare.route_metrics import attach_route_metrics
+        attach_route_metrics(run_dict, job.dataset)
         run_dict["params"] = {k: v for k, v in effective_params.items() if k != "seed"}
+        if job.combination:
+            run_dict['params'] = algo.combination.effective_params()
+            run_dict['combination'] = job.combination
+        run_dict['started_at'] = started_at
+        run_dict['finished_at'] = datetime.now().astimezone().isoformat(timespec='milliseconds')
         return run_dict
 
     def cancel(self):

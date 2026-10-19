@@ -34,6 +34,8 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName("CPP Arena")
+    from gui.theme import apply_theme
+    apply_theme(app)
 
     icon_path = os.path.join(_BASE, "assets", "app_icon.png")
     if os.path.exists(icon_path):

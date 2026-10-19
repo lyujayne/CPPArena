@@ -43,7 +43,7 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
         return solve_aco_gtsp(nodes, params=params, seed=seed)
 
     def plan_subregion(self, vertices, line_spacing):
-        return plan_region_variants(vertices, line_spacing)
+        return plan_region_variants(vertices, line_spacing, boundary_mode=self._scan_boundary_mode)
 
     def solve(self, cpp_input: CPPInput, **params) -> CPPResult:
         params = dict(self.default_params, **params)
@@ -55,6 +55,7 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
         np.random.seed(seed)
 
         cam = cpp_input.camera
+        self._scan_boundary_mode = cam.scan_boundary_mode
         line_spacing = cam.line_spacing
         launch = cpp_input.launch_point
         from config.default_params import compute_camera
@@ -94,7 +95,7 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
                     camera_info['coverage_w'], camera_info['coverage_h'])
                 poly = Polygon(sub_pts)
                 missed = poly.difference(covered).area
-                if missed > max(1e-6, poly.area*1e-9):
+                if self._scan_boundary_mode == 'envelope' and missed > max(1e-6, poly.area*1e-9):
                     raise RuntimeError(f"区域「{region.name}」的扫描足迹仍有未覆盖面积 {missed:.6f} m²")
                 coverage_records.append({"region": region.id, "subregion_index": sub_idx,
                     "area": poly.area, "uncovered_area": missed,
@@ -114,10 +115,12 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
         sub_id_counter = 1
         node_by_sub: dict = {}
         subregion_polys: dict = {}
+        plan_by_node = {}
         for region in cpp_input.regions:
             for sub_idx, variants in enumerate(subregion_plans[region.id]):
                 subregion_polys[sub_id_counter] = region_convex_polys[region.id][sub_idx]
                 for v in variants:
+                    plan_by_node[len(nodes)] = v
                     nd = GTSPNode(index=len(nodes), region_id=region.id,
                                   subregion_id=sub_id_counter,
                                   entry=v.entry, exit=v.exit,
@@ -152,6 +155,9 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
             if poly is not None:
                 subregion_sequence.append({
                     "order": seq_order,
+                    "region_id": nd.region_id, "subregion_id": nd.subregion_id,
+                    "entry": list(nd.entry), "exit": list(nd.exit), "variant_id": nd.variant_id,
+                    "scan_segments": [[list(a), list(b)] for a, b in plan_by_node[nd_idx].scan_segments],
                     "polygon": [[float(x), float(y)] for x, y in poly],
                 })
             chosen_variants.setdefault(nd.region_id, []).append(nd.subregion_id)
@@ -168,6 +174,10 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
         from compare.metrics import count_turns
         total_turns = count_turns(waypoints)
 
+        from compare.coverage_metrics import evaluate_coverage
+        actual_coverage = evaluate_coverage(cpp_input.regions,
+            [segment for item in subregion_sequence for segment in item['scan_segments']],
+            camera_info['coverage_w'], camera_info['coverage_h'])
         runtime = time.perf_counter() - t0
         metadata = {
             "implementation_revision": "paper-alignment-2026-10-18",
@@ -181,14 +191,20 @@ class ACOGTSPAlgorithm(BaseCPPAlgorithm):
             "coverage": {"model": "continuous nadir rectangular footprints on scan legs",
                 "covered_ratio": 1-sum(r['uncovered_area'] for r in coverage_records)/sum(r['area'] for r in coverage_records),
                 "subregions": coverage_records,
-                "boundary_handling": "band projection envelope; endpoints may leave polygon; no NFZ assumed",
+                "boundary_handling": self._scan_boundary_mode,
+                "uncovered_area_m2": sum(r['uncovered_area'] for r in coverage_records),
+                "warning": ('扫描限制在子区内；尖角处可能存在未覆盖面积，请结合实际覆盖率、航高与重叠率判断。'
+                            if sum(r['uncovered_area'] for r in coverage_records) > 1e-6 else ''),
                 "execution_requirement": "camera yaw aligned with sweep; continuous capture or trigger interval <= footprint length"},
             "turn_metrics": {"heading_changes_over_5deg": int(total_turns),
-                "sweep_reversals": sum(r['sweep_reversals'] for r in coverage_records),
-                "li_eq17_scan_count": sum(r['scan_lines'] for r in coverage_records)},
+                "sweep_reversals": sum(plan_by_node[j].turns for j in visit),
+                "li_eq17_scan_count": sum(len(plan_by_node[j].scan_segments) for j in visit)},
             "mission_distance": float(total_distance),
             "note": "论文来源、目标函数与无法严格复现的部分见 gtsp.implementation_assumptions；几何拐点与换行次数分别记录。",
         }
+        metadata['coverage'].update(actual_coverage)
+        metadata['coverage']['warning'] = ('扫描限制在子区内；尖角处可能存在未覆盖面积，请结合实际覆盖率、航高与重叠率判断。'
+            if actual_coverage['uncovered_area_m2'] > 1e-6 else '')
         return CPPResult(
             waypoints=waypoints,
             total_distance=float(total_distance),

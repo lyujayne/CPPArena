@@ -6,7 +6,7 @@
 - 实时计算显示：GSD、单幅影像覆盖宽/高、航线间距、航向拍照间距。
 """
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (QDoubleSpinBox, QFormLayout, QGroupBox,
+from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
                                QLabel, QSpinBox, QVBoxLayout, QWidget)
 
 from config.default_params import CAMERA_DEFAULTS, CAMERA_PARAM_ORDER, compute_camera
@@ -31,6 +31,16 @@ class CameraPanel(QWidget):
 
         g = QGroupBox("相机与飞行参数（全局共享）")
         form = QFormLayout(g)
+        self.boundary_combo = QComboBox()
+        self.boundary_combo.addItem('子区内扫描（端点裁至边界）', 'inside')
+        self.boundary_combo.addItem('条带包络覆盖（允许越界）', 'envelope')
+        self.boundary_combo.setToolTip('子区内模式限制扫描和区内换行；起降和子区之间的转场可经过区外。覆盖率按实际相机足迹计算。')
+        self.boundary_combo.currentIndexChanged.connect(self._on_change)
+        form.addRow('扫描边界', self.boundary_combo)
+        self.boundary_help = QLabel()
+        self.boundary_help.setWordWrap(True)
+        self.boundary_help.setStyleSheet('color:#475569;padding:5px;')
+        form.addRow(self.boundary_help)
         for key, label in CAMERA_PARAM_ORDER:
             default = CAMERA_DEFAULTS[key]
             if key in _INT_KEYS:
@@ -72,9 +82,12 @@ class CameraPanel(QWidget):
 
     # ---------------- 读写 ----------------
     def get_camera(self) -> dict:
-        return {k: w.value() for k, w in self._widgets.items()}
+        return dict({k: w.value() for k, w in self._widgets.items()}, scan_boundary_mode=self.boundary_combo.currentData())
 
     def set_camera(self, cam: dict):
+        self.boundary_combo.blockSignals(True)
+        self.boundary_combo.setCurrentIndex(max(0, self.boundary_combo.findData(cam.get('scan_boundary_mode', 'inside'))))
+        self.boundary_combo.blockSignals(False)
         for k, w in self._widgets.items():
             if k in cam:
                 w.blockSignals(True)
@@ -88,6 +101,11 @@ class CameraPanel(QWidget):
         self.changed.emit()
 
     def _refresh_computed(self):
+        if hasattr(self, 'boundary_help'):
+            self.boundary_help.setText(
+                '子区内扫描：扫描端点裁到凸子区边界，区内换行也留在子区内；尖角可能漏扫。起降与子区转场仍可经过区外。'
+                if self.boundary_combo.currentData() == 'inside' else
+                '条带包络覆盖：为覆盖整条带的尖角，沿扫描方向延长航段；扫描及换行可越过子区边界。按相机足迹检验覆盖，不代表具备避障能力。')
         try:
             c = compute_camera(self.get_camera())
             self.lbl_gsd.setText(f"{c['gsd']:.4f}")

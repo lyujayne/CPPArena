@@ -1,11 +1,7 @@
 # -*- coding: utf-8 -*-
-"""单算法结果统计面板：展示最近一次运行的标准指标与算法自定义信息。
+"""Selected-run metrics and the shared experiment log."""
 
-对应需求规格 4.6.3 表格的「单次运行明细」与 CPPResult.metadata 展示。
-"""
-import json
-
-from PySide6.QtWidgets import (QFormLayout, QGroupBox, QLabel, QTextBrowser,
+from PySide6.QtWidgets import (QFormLayout, QGroupBox, QLabel, QPlainTextEdit,
                                QVBoxLayout, QWidget)
 
 
@@ -41,21 +37,39 @@ class ResultPanel(QWidget):
         form.addRow("扫描足迹覆盖率", self.lbl_coverage)
         form.addRow("优化目标", self.lbl_objective)
         v.addWidget(g)
+        self.lbl_note = QLabel('')
+        self.lbl_note.setWordWrap(True)
+        self.lbl_note.setStyleSheet('color:#92400e;background:#fff7e6;padding:8px;border-radius:5px;')
+        self.lbl_note.hide()
+        v.addWidget(self.lbl_note)
 
-        g2 = QGroupBox("算法细节（metadata）")
-        self.detail = QTextBrowser()
-        self.detail.setOpenExternalLinks(False)
-        g2.setLayout(QVBoxLayout())
-        g2.layout().addWidget(self.detail)
-        v.addWidget(g2, 1)
+        self.log_box = QGroupBox('实验日志')
+        self.log_layout = QVBoxLayout(self.log_box)
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setPlaceholderText('运行实验后显示进度、完成事件与错误信息。')
+        self.log_layout.addWidget(self.log)
+        self.detail = self.log  # Compatibility for script consumers; no metadata pane remains.
+        self.outer_layout = v
+        v.addWidget(self.log_box, 1)
+
+    def attach_log_box(self, box, log):
+        self.outer_layout.removeWidget(self.log_box)
+        self.log_box.hide()
+        self.log_box.deleteLater()
+        self.log_box = box
+        self.log = self.detail = log
+        self.outer_layout.addWidget(box, 1)
+        box.setMaximumHeight(16777215)
+        box.show()
 
     def clear(self):
+        self.lbl_note.clear()
+        self.lbl_note.hide()
         for lbl in (self.lbl_algo, self.lbl_seed, self.lbl_dist,
                     self.lbl_turns, self.lbl_runtime, self.lbl_order,
                     self.lbl_coverage, self.lbl_objective):
             lbl.setText("--")
-        self.detail.setPlainText("运行实验后，此处显示算法细节（凸分解信息、"
-                                 "GTSP 统计、收敛末尾值等）。")
 
     def show_run(self, run: dict):
         """run: ExperimentRunner 输出的单次运行字典。"""
@@ -64,7 +78,9 @@ class ResultPanel(QWidget):
             self.lbl_algo.setText(str(run.get('algorithm', '--')))
             self.lbl_seed.setText(str(run.get('seed', '--')))
             self.lbl_objective.setText('运行失败')
-            self.detail.setPlainText(run['error'])
+            if run['error'] not in self.log.toPlainText():
+                from html import escape
+                self.log.appendHtml('<span style="color:#b91c1c">' + escape(run['error']) + '</span>')
             return
         self.lbl_algo.setText(str(run.get("algorithm", "--")))
         self.lbl_seed.setText(str(run.get("seed", "--")))
@@ -74,23 +90,13 @@ class ResultPanel(QWidget):
         order = run.get("region_order") or []
         self.lbl_order.setText(" → ".join(str(i) for i in order) if order else "--")
 
-        conv = run.get("convergence") or []
-        lines = []
         meta = run.get("metadata") or {}
         coverage = meta.get("coverage", {})
+        notes = [coverage.get('warning', ''), meta.get('gtsp', {}).get('paper_extension', '')]
+        self.lbl_note.setText('\n'.join(note for note in notes if note))
+        self.lbl_note.setVisible(bool(self.lbl_note.text()))
         ratio = coverage.get("covered_ratio")
         self.lbl_coverage.setText(f"{ratio*100:.4f}%（连续拍摄模型）" if ratio is not None else "--")
         objective = meta.get("gtsp", {}).get("objective")
         self.lbl_objective.setText("开放子区连接距离（不含起降和内部扫描）"
             if objective == "open_inter_region_distance" else "完整任务距离")
-        if meta:
-            try:
-                lines.append(json.dumps(meta, ensure_ascii=False, indent=2))
-            except Exception:
-                lines.append(str(meta))
-        else:
-            lines.append("（无自定义元信息）")
-        if conv:
-            tail = [f"{v:.1f}" for v in conv[-5:]]
-            lines.append(f"\n收敛历史长度: {len(conv)}，末段: {', '.join(tail)}")
-        self.detail.setPlainText("\n".join(lines))

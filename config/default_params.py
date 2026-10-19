@@ -6,7 +6,7 @@ import os
 import sys
 
 APP_NAME = "CPP Arena"
-APP_VERSION = "1.7.2"
+APP_VERSION = "2.1"
 
 # 项目根目录（cpp_arena/）
 # 打包为 exe（PyInstaller 冻结）后：只读资源在 sys._MEIPASS（临时解压目录），
@@ -22,13 +22,17 @@ RESOURCE_DIR = getattr(sys, "_MEIPASS", BASE_DIR)
 EXPERIMENT_DIR = os.path.join(BASE_DIR, "experiments")
 PLUGIN_DIR = os.path.join(BASE_DIR, "algorithms", "plugins")
 PROJECT_DIR = os.path.join(BASE_DIR, "projects")
+PICTURE_DIR = os.path.join(BASE_DIR, 'pictures')
+DATASET_LIBRARY_DIR = os.path.join(BASE_DIR, 'dataset_library')
+COMPONENT_DIR = os.path.join(BASE_DIR, 'components')
 
-for _d in (EXPERIMENT_DIR, PROJECT_DIR):
+for _d in (EXPERIMENT_DIR, PROJECT_DIR, PICTURE_DIR):
     os.makedirs(_d, exist_ok=True)
 
 
 # ---------------------------------------------------------------- 相机/飞行参数
 CAMERA_DEFAULTS = {
+    "scan_boundary_mode": "inside",
     "focal_length_mm": 5.2,     # 相机焦距 (mm)
     "sensor_width_mm": 7.6,     # 传感器宽度 (mm)
     "sensor_height_mm": 5.7,    # 传感器高度 (mm)
@@ -108,6 +112,7 @@ ALGORITHM_DEFAULTS["PSO-FA3ACO"] = {
 }
 ALGORITHM_DEFAULTS["Enhanced-ECD-DP"] = {
     "dp_max_groups": 16, "li_start_group": 0, "li_end_group": 0, "seed": 42,
+    "li_adjacency_mode": 0,
 }
 
 ALGORITHM_META = {
@@ -132,7 +137,7 @@ ALGORITHM_META = {
     "Enhanced-ECD-DP": {
         "author": "Li et al. (2011)",
         "citation": "Mechatronics 21:876–885; 10.1016/j.mechatronics.2010.10.009",
-        "scope": "增强分割、仅邻接子区建边、指定起终子区的开放最小遍历DP。",
-        "params_note": "起终编号0表示自动选择；起降附加航段不参与论文目标。支撑线边界连接点按实际扫描奇偶配对，原文nturn记法有歧义。超上限或邻接图无遍历时明确报错，不自动改算法。",
+        "scope": "增强分割与开放DP。默认允许不相邻子区转场（工程扩展）；转场约束1为Li论文的严格邻接图。",
+        "params_note": "li_adjacency_mode=0通用转场，1严格邻接；两种模式均用精确DP。起终编号0表示自动选择。起降附加航段不参与连接目标。严格模式无解时明确说明，不自动放宽；超过子区/内存上限时报错。",
     },
 }

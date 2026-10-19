@@ -16,6 +16,11 @@ def decompose_region_with(algo_name: str, vertices, params: dict = None):
     即调用之（ACO-GTSP=Bayazit，PSO-FA3ACO=PSO-DCAS）；未实现该钩子的算法
     回退到 Bayazit 凸分解。
     """
+    from core.combinations import DECOMPOSITIONS, component_defaults
+    if algo_name in DECOMPOSITIONS:
+        effective = dict(component_defaults('decomposition', algo_name), **(params or {}))
+        effective.setdefault('seed', 42)
+        return DECOMPOSITIONS[algo_name][1]().decompose_region(vertices, effective)
     from core.registry import get_registry
     cls = get_registry().get(algo_name)
     if cls is not None and hasattr(cls, "decompose_region"):

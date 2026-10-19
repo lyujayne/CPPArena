@@ -12,7 +12,10 @@ TURN_ANGLE_THRESHOLD_DEG = 5.0
 
 
 def successful_run(run):
-    return not run.get('error') and math.isfinite(float(run.get('total_distance', float('nan'))))
+    try:
+        return not run.get('error') and math.isfinite(float(run.get('total_distance', float('nan'))))
+    except (TypeError, ValueError):
+        return False
 
 
 def path_length(waypoints: List[XY]) -> float:
@@ -29,6 +32,11 @@ def count_turns(waypoints: List[XY],
 
     对航点序列逐三角判断航向角变化，避免依赖具体算法实现。
     """
+    cleaned = []
+    for point in waypoints:
+        if not cleaned or math.dist(point, cleaned[-1]) >= 1e-9:
+            cleaned.append(point)
+    waypoints = cleaned
     if len(waypoints) < 3:
         return 0
     thresh = math.radians(threshold_deg)

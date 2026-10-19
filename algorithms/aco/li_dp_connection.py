@@ -18,7 +18,7 @@ from algorithms.aco.aco_gtsp import build_cost_matrix, validate_visit
 MAX_DP_GROUPS = 16
 
 
-def li_adjacency_cost(nodes):
+def li_adjacency_cost(nodes, restrict=True):
     groups = {}
     polygons = {}
     for node in nodes[1:]:
@@ -35,7 +35,7 @@ def li_adjacency_cost(nodes):
                 continue
             # 仅数值容差：原多边形切割产生的共享顶点可能相差约 1e-12 m。
             adjacent[a, b] = polygons[a].distance(polygons[b]) <= 1e-7
-            if not adjacent[a, b]:
+            if restrict and not adjacent[a, b]:
                 cost[np.ix_(groups[a], groups[b])] = math.inf
     cost[0, :] = cost[:, 0] = math.inf
     return cost, groups, adjacent
@@ -43,7 +43,11 @@ def li_adjacency_cost(nodes):
 
 def solve_li_dp_connection(nodes, params, seed=42):
     start_time = time.perf_counter()
-    cost, groups, adjacent = li_adjacency_cost(nodes)
+    mode = int(params.get('li_adjacency_mode', 1))
+    if mode not in (0, 1):
+        raise ValueError('DP 转场约束只能为 0（通用转场）或 1（严格论文邻接）')
+    strict = mode == 1
+    cost, groups, adjacent = li_adjacency_cost(nodes, restrict=strict)
     gids = sorted(groups)
     G, n = len(gids), len(nodes)
     if not G:
@@ -58,6 +62,23 @@ def solve_li_dp_connection(nodes, params, seed=42):
             (end is not None and end not in groups) or
             (G > 1 and start is not None and start == end)):
         raise ValueError("Li 开放遍历起终子区编号无效，多个子区时起终点必须不同")
+    if strict and G > 1:
+        reached, pending = set(), [gids[0]]
+        while pending:
+            group = pending.pop()
+            if group in reached:
+                continue
+            reached.add(group)
+            pending.extend(g for g in gids if adjacent.get((group, g), False) and g not in reached)
+        leaves = [g for g in gids if sum(adjacent.get((g, h), False) for h in gids) == 1]
+        if len(reached) != G:
+            raise ValueError('严格邻接 DP：子区图不连通，不存在覆盖全部子区的邻接遍历；调整起终编号无济于事。'
+                             '若允许地块间转场，请将“转场约束”设为 0；严格模式不会自动放宽约束。')
+        if len(leaves) > 2:
+            raise ValueError(f'严格邻接 DP：图中有 {len(leaves)} 个叶子子区 {leaves}，不存在每区恰好一次的开放遍历。'
+                             '若允许跨子区转场，请将“转场约束”设为 0。')
+    if G >= 25 or (1 << G)*n > 32_000_000:
+        raise ValueError(f'精确 DP 的 {G} 个子区需要过大的状态表；请减少分割数量或使用 ACO/FA3ACO。')
     bits = {g: 1 << i for i, g in enumerate(gids)}
     full = (1 << G)-1
     dp = np.full((1 << G, n), math.inf)
@@ -74,7 +95,7 @@ def solve_li_dp_connection(nodes, params, seed=42):
             for g in gids:
                 if mask & bits[g] or (g == end and (mask | bits[g]) != full):
                     continue
-                if not adjacent.get((nodes[last].subregion_id, g), False):
+                if strict and not adjacent.get((nodes[last].subregion_id, g), False):
                     continue
                 new = mask | bits[g]
                 for v in groups[g]:
@@ -87,7 +108,8 @@ def solve_li_dp_connection(nodes, params, seed=42):
     best = float(dp[full, last])
     if not math.isfinite(best):
         raise ValueError("Li 邻接图在指定起终子区之间不存在每区恰好一次的遍历；"
-                         "请调整 li_start_group/li_end_group。程序未放宽邻接约束或跳过子区。")
+                         "起终编号为0表示自动选择，但不保证图存在遍历。可检查起终编号，或显式选择转场约束0。"
+                         "程序未自动放宽邻接约束或跳过子区。")
     mask, seq = full, []
     while True:
         seq.append(last)
@@ -100,7 +122,10 @@ def solve_li_dp_connection(nodes, params, seed=42):
     validate_visit(nodes, seq)
     inside = sum(nodes[j].internal_distance for j in seq)
     return seq, [best], {
-        "solver": "Li2011-DP(adjacency, open, Eq.32/34)", "exact": True,
+        "solver": "Li2011-DP(adjacency, open, Eq.32/34)" if strict else 'Open-DP(free transfers, Li-style boundary joints)', "exact": True,
+        "connection_mode": 'strict_adjacency' if strict else 'free_transfers',
+        "paper_extension": None if strict else '允许非邻接子区直接转场；这是通用开放DP扩展，不是论文Eq.32邻接约束。',
+        "nonadjacent_transfers": sum(not adjacent.get((nodes[a].subregion_id, nodes[b].subregion_id), False) for a, b in zip(seq, seq[1:])),
         "n_nodes": n, "n_groups": G,
         "start_group": nodes[seq[0]].subregion_id, "end_group": nodes[seq[-1]].subregion_id,
         "endpoint_selection": "user-fixed" if start and end else "DP selects unspecified endpoint(s)",

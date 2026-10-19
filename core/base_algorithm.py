@@ -45,6 +45,7 @@ class CameraParams:
     flight_height_m: float = 100.0
     side_overlap_pct: float = 80.0
     heading_overlap_pct: float = 80.0
+    scan_boundary_mode: str = 'inside'
 
     def as_dict(self) -> dict:
         return {
@@ -56,6 +57,7 @@ class CameraParams:
             "flight_height_m": self.flight_height_m,
             "side_overlap_pct": self.side_overlap_pct,
             "heading_overlap_pct": self.heading_overlap_pct,
+            "scan_boundary_mode": self.scan_boundary_mode,
         }
 
     @classmethod

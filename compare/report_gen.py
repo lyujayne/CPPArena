@@ -87,13 +87,21 @@ def generate_report(project_name: str, camera: dict, runs_by_algo: Dict[str, Lis
     # 算法描述
     md += ["## 2. 算法描述（Methods 素材）", ""]
     for algo in runs_by_algo:
-        meta = algos_meta.get(algo, {})
-        md.append(algorithm_description(meta, params_by_algo.get(algo, {})))
+        meta = dict(algos_meta.get(algo, {}))
+        meta.setdefault('display_name', algo)
+        actual = next((r.get('params') for r in runs_by_algo[algo] if r.get('params')), {})
+        md.append(algorithm_description(meta, actual or params_by_algo.get(algo, {})))
         md.append("")
 
     # 结果表
     df = build_comparison_table(runs_by_algo, baseline=baseline)
-    md += ["## 3. 对比结果表", "", df.to_markdown(), ""]
+    md += ["## 3. 对比结果表", "", markdown_table(df), "",
+           '开放子区连接距离只计算相邻访问子区的出口到入口，不含内部扫描及起降返航；完整任务距离包含这些部分。', '']
+    md += [f'距离基线：{baseline or "未设置（改善率不计算）"}。改善率=(基线均值−此组合均值)/基线均值×100%。', '']
+    from compare.route_metrics import METRIC_HELP
+    md += ['### 路线指标定义', ''] + [f'- {key}：{value}' for key, value in METRIC_HELP.items()] + ['']
+    md += ['转弯和非作业航程的评价方向参考 R-DFS (Remote Sensing, 2021)：https://www.mdpi.com/2072-4292/13/8/1525 。'
+           '本平台按上述明确的几何定义实现；没有根据这些数值推算能耗。', '']
 
     # LaTeX
     md += ["## 4. LaTeX 表格源码（booktabs）", "",
@@ -111,10 +119,32 @@ def generate_report(project_name: str, camera: dict, runs_by_algo: Dict[str, Lis
     for algo, runs in runs_by_algo.items():
         md.append(f"### {algo}")
         for r in runs:
-            md.append(f"- seed={r['seed']}: 距离 {r['total_distance']:.2f} m, "
-                      f"航向拐点 {r['total_turns']}, 耗时 {r['runtime']:.3f} s")
+            if r.get('error'):
+                md.append(f"- seed={r.get('seed', '--')}: 运行失败：{r['error']}")
+                continue
+            md.append(f"- seed={r.get('seed', '--')}: 距离 {r.get('total_distance', 0):.2f} m, "
+                      f"航向拐点 {r.get('total_turns', '--')}, 耗时 {r.get('runtime', 0):.3f} s")
+            metadata = r.get('metadata') or {}
+            if metadata.get('coverage'):
+                md.append(f"  - 扫描足迹覆盖率：{metadata['coverage'].get('covered_ratio', '--')}；"
+                          f"未覆盖面积：{metadata['coverage'].get('uncovered_area_m2', '--')} m²")
+            if metadata.get('gtsp', {}).get('paper_extension'):
+                md.append('  - ' + metadata['gtsp']['paper_extension'])
         md.append("")
     return "\n".join(md)
+
+
+def markdown_table(df):
+    """Render a portable summary without pandas' optional tabulate dependency."""
+    def cell(value):
+        if pd.isna(value):
+            return '--'
+        return str(value).replace('|', '\\|').replace('\n', ' ')
+    lines = ['| 指标 | ' + ' | '.join(map(cell, df.columns)) + ' |',
+             '| --- | ' + ' | '.join('---' for _ in df.columns) + ' |']
+    lines.extend('| ' + cell(index) + ' | ' + ' | '.join(cell(v) for v in row) + ' |'
+                 for index, row in df.iterrows())
+    return '\n'.join(lines)
 
 
 def save_runs_json(runs_by_algo: Dict[str, List[dict]], path: str):

@@ -15,16 +15,17 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolb
 from matplotlib.figure import Figure
 from matplotlib.patches import Polygon as MplPolygon
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QWidget, QVBoxLayout
+from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QWidget, QVBoxLayout, QGridLayout, QScrollArea, QLabel
 
-from algorithms.aco.polygon_decomp import convex_decompose
 from data.dataset import Dataset
+from core.path_annotations import draw_entry_exit, draw_route, draw_partition, draw_partitions
+from gui.export_toolbar import JpegNavigationToolbar
 
 XY = Tuple[float, float]
 
 # 多算法叠加配色
 ALGO_COLORS = ["#d62728", "#1f77b4", "#2ca02c", "#9467bd",
-               "#ff7f0e", "#8c564b", "#e377c2", "#7f7f7f"]
+               "#ff7f0e", "#8c564b", "#e377c2", "#7f7f7f", "#008b8b"]
 ALGO_LINESTYLES = ["-", "--", "-.", ":"]
 
 
@@ -39,7 +40,7 @@ class PathCanvas(QWidget):
         super().__init__(parent)
         self.figure = Figure(figsize=(8, 7), dpi=100)
         self.canvas = FigureCanvasQTAgg(self.figure)
-        self.toolbar = NavigationToolbar2QT(self.canvas, self)
+        self.toolbar = JpegNavigationToolbar(self.canvas, self)
         # 移除 Back/Forward（左右箭头），界面更简洁
         for _act in list(self.toolbar.actions()):
             if _act.text().lower() in ("back", "forward"):
@@ -47,12 +48,26 @@ class PathCanvas(QWidget):
         self._toolbar_row = QHBoxLayout()
         self._toolbar_row.setContentsMargins(0, 0, 0, 0)
         self._toolbar_row.addWidget(self.toolbar)
-        self._toolbar_row.addSpacing(16)
+        self._extras_grid = QGridLayout()
+        self._extra_count = 0
+        toggle_host = QWidget()
+        self._toggle_row = QHBoxLayout(toggle_host)
+        self._toggle_row.setContentsMargins(4, 0, 4, 0)
+        toggle_scroll = QScrollArea()
+        self._toggle_scroll = toggle_scroll
+        toggle_scroll.setWidgetResizable(True)
+        toggle_scroll.setWidget(toggle_host)
+        toggle_scroll.setFixedHeight(48)
+        toggle_scroll.hide()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(self._toolbar_row)
+        layout.addLayout(self._extras_grid)
+        layout.addWidget(toggle_scroll)
         layout.addWidget(self.canvas)
+        self.coordinate_label = QLabel('坐标单位：米 · 勾绘前可设置地理位置与可见范围')
+        layout.addWidget(self.coordinate_label)
         self.ax = self.figure.add_subplot(111)
 
         self._dataset: Optional[Dataset] = None
@@ -62,13 +77,14 @@ class PathCanvas(QWidget):
         self._layers = {"regions": True, "subregions": True, "internal": True,
                         "transitions": True, "launch": True, "image": True,
                         "suborder": True,
-                        "route": True}   # 「显示路径」总开关：移动路径+访问顺序
+                        "route": True, "endpoints": True}   # 独立控制入口/出口标记
         # 各算法路径的单独显隐（功能 1）：算法名 -> 工具栏勾选框
         self._algo_toggles: Dict[str, QCheckBox] = {}
         self._hidden_algos: set = set()
         # 分解预览使用的分割算法（功能 2）：None=默认 Bayazit；及分解结果缓存
         self._decomp_algo: Optional[str] = None
         self._decomp_cache: Dict[tuple, list] = {}
+        self.offline = False
 
         # 交互状态
         self._draw_mode = None        # None | "polygon" | "launch"
@@ -79,6 +95,7 @@ class PathCanvas(QWidget):
         self.canvas.mpl_connect("button_press_event", self._on_click)
         self.canvas.mpl_connect("motion_notify_event", self._on_motion)
         self.canvas.mpl_connect("scroll_event", self._on_scroll)
+        self.set_metric_view((500000, 4427757), 1000)
 
     # ------------------------------------------------------------ 数据
     def set_dataset(self, dataset: Optional[Dataset], decomposed: bool = False):
@@ -97,9 +114,10 @@ class PathCanvas(QWidget):
     def _rebuild_algo_toggles(self):
         """按当前结果中的算法重建工具栏勾选框（每个算法一个，默认显示）。"""
         for cb in self._algo_toggles.values():
-            self._toolbar_row.removeWidget(cb)
+            self._toggle_row.removeWidget(cb)
             cb.deleteLater()
         self._algo_toggles.clear()
+        self._toggle_scroll.setVisible(bool(self._results))
         self._hidden_algos &= set(self._results.keys())
         for k, algo in enumerate(self._results.keys()):
             color = ALGO_COLORS[k % len(ALGO_COLORS)]
@@ -108,7 +126,7 @@ class PathCanvas(QWidget):
             cb.setStyleSheet(f"QCheckBox{{color:{color};font-weight:bold;}}")
             cb.setToolTip("勾选显示该算法的移动路径与访问顺序")
             cb.toggled.connect(lambda on, a=algo: self._toggle_algo_path(a, on))
-            self._toolbar_row.addWidget(cb)
+            self._toggle_row.addWidget(cb)
             self._algo_toggles[algo] = cb
 
     def _toggle_algo_path(self, algo: str, on: bool):
@@ -127,6 +145,9 @@ class PathCanvas(QWidget):
 
     def _preview_pieces(self, pts: List[XY]) -> list:
         """按所选分割算法计算单个地块的凸分解结果（带缓存）。"""
+        if self.offline:
+            return []
+        from algorithms.aco.polygon_decomp import convex_decompose
         key = (self._decomp_algo or "",
                tuple((round(float(x), 3), round(float(y), 3)) for x, y in pts))
         if key in self._decomp_cache:
@@ -144,8 +165,8 @@ class PathCanvas(QWidget):
 
     def add_toolbar_extra(self, widget):
         """把额外控件（如显示选项复选框）追加到画布工具栏右侧。"""
-        self._toolbar_row.addWidget(widget)
-        self._toolbar_row.addSpacing(8)
+        self._extras_grid.addWidget(widget, self._extra_count // 3, self._extra_count % 3)
+        self._extra_count += 1
 
     def set_decomposed(self, on: bool):
         self._decomposed = bool(on)
@@ -157,6 +178,11 @@ class PathCanvas(QWidget):
             self.redraw()
 
     def start_draw_polygon(self):
+        if self.toolbar.mode:
+            if 'pan' in str(self.toolbar.mode).lower():
+                self.toolbar.pan()
+            else:
+                self.toolbar.zoom()
         self._draw_mode = "polygon"
         self._temp_pts = []
         self._safe_remove_temp()
@@ -203,6 +229,11 @@ class PathCanvas(QWidget):
         self._temp_artist = None
         ds = self._dataset
         if ds is None:
+            self.ax.set_xlabel('东向 (m)')
+            self.ax.set_ylabel('北向 (m)')
+            self.ax.set_xlim(*preserve_lim[0])
+            self.ax.set_ylim(*preserve_lim[1])
+            self.ax.grid(True, alpha=.22)
             self.canvas.draw_idle()
             return
 
@@ -219,13 +250,14 @@ class PathCanvas(QWidget):
             except Exception:
                 pass
 
+        preview_polygons = []
         for region in ds.regions:
             pts = region.vertices
             if not pts:
                 continue
             if self._layers["regions"]:
                 poly = MplPolygon(pts, closed=True, fill=False,
-                                  edgecolor="#333333", linewidth=1.6, zorder=2)
+                                  edgecolor="#333333", linewidth=1.6, zorder=2, joinstyle='round')
                 poly.set_picker(6)
                 self.ax.add_patch(poly)
                 cx = sum(p[0] for p in pts) / len(pts)
@@ -235,15 +267,15 @@ class PathCanvas(QWidget):
                              bbox=dict(boxstyle="round,pad=0.2",
                                        facecolor="white", alpha=0.7))
 
-            if self._decomposed and self._layers["subregions"]:
+            if self._decomposed and self._layers["subregions"] and not self._results:
                 try:
                     parts = self._preview_pieces(pts)
                 except Exception:
                     parts = []
-                for part in parts:
-                    self.ax.add_patch(MplPolygon(
-                        part, closed=True, fill=False,
-                        edgecolor="#ff7f0e", linewidth=1.0, alpha=0.8, zorder=3))
+                preview_polygons.extend(parts)
+
+        if preview_polygons:
+            draw_partitions(self.ax, preview_polygons)
 
         # 起飞点
         if self._layers["launch"] and ds.launch_point:
@@ -264,21 +296,16 @@ class PathCanvas(QWidget):
             color = ALGO_COLORS[k % len(ALGO_COLORS)]
             ls = ALGO_LINESTYLES[(k // len(ALGO_COLORS)) % len(ALGO_LINESTYLES)]
             wps = run.get("waypoints") or []
+            if self._decomposed and self._layers['subregions']:
+                draw_partitions(self.ax, [seq['polygon'] for seq in run.get('subregion_sequence', [])], color)
             if not wps:
                 continue
-            pts_arr = np.asarray(wps, dtype=float)
-            if show_route and self._layers["transitions"]:
-                self.ax.plot(pts_arr[:, 0], pts_arr[:, 1], ls, color=color,
-                             linewidth=1.4, alpha=0.9,
-                             label=f"{algo} ({run.get('total_distance', 0):.0f} m)",
-                             zorder=4)
-            if show_route and self._layers["internal"]:
-                for path in run.get("internal_paths", []):
-                    if len(path) < 2:
-                        continue
-                    p = np.asarray(path, dtype=float)
-                    self.ax.plot(p[:, 0], p[:, 1], ls, color=color, linewidth=0.7,
-                                 alpha=0.55, zorder=3)
+            if show_route:
+                draw_route(self.ax, run, color,
+                    label=f"{algo} ({run.get('total_distance', 0):.0f} m)",
+                    show_internal=self._layers['internal'], show_transfers=self._layers['transitions'])
+            if show_route and self._layers.get('endpoints', True):
+                draw_entry_exit(self.ax, run)
             if show_route and self._layers.get("suborder"):
                 for seq in run.get("subregion_sequence", []):
                     poly = seq.get("polygon") or []
@@ -293,9 +320,16 @@ class PathCanvas(QWidget):
                                            facecolor="white", edgecolor="#1f3b99",
                                            lw=1.2))
 
+        if show_route and self._results and self._layers['transitions']:
+            self.ax.plot([], [], '--', color='#64748b', lw=1, label='虚线：起降 / 子区转场')
         self.ax.set_aspect("equal", adjustable="datalim")
         if self._reset_view:
-            self.ax.autoscale()
+            if ds.regions or ds.bg_bounds_utm:
+                self.ax.autoscale()
+                self.ax.margins(.06)
+            else:
+                self.ax.set_xlim(*preserve_lim[0])
+                self.ax.set_ylim(*preserve_lim[1])
             self._reset_view = False
         else:
             self.ax.set_xlim(preserve_lim[0])
@@ -347,6 +381,12 @@ class PathCanvas(QWidget):
             self._status_hint("起飞点已设置")
 
     def _on_motion(self, event):
+        if event.inaxes == self.ax and event.xdata is not None and event.ydata is not None:
+            text = f'E {event.xdata:.2f} m  ·  N {event.ydata:.2f} m'
+            if self._draw_mode == 'polygon' and self._temp_pts:
+                x, y = self._temp_pts[-1]
+                text += f'  ·  当前边长 {np.hypot(event.xdata-x, event.ydata-y):.2f} m'
+            self.coordinate_label.setText(text)
         if (self._draw_mode == "polygon" and event.inaxes == self.ax
                 and event.xdata is not None and event.ydata is not None):
             if self._temp_pts:
@@ -382,11 +422,24 @@ class PathCanvas(QWidget):
         self.canvas.draw_idle()
 
     def fit_view(self):
+        self._reset_view = True
         self.redraw()
 
     def reset_view(self):
+        self._reset_view = True
         self.redraw()
 
+    def set_metric_view(self, center, width):
+        self.ax.set_xlim(center[0]-width/2, center[0]+width/2)
+        self.ax.set_ylim(center[1]-width/2, center[1]+width/2)
+        self.ax.set_aspect('equal', adjustable='box')
+        self.ax.set_xlabel('东向 (m)')
+        self.ax.set_ylabel('北向 (m)')
+        self.ax.grid(True, alpha=.22)
+        self.coordinate_label.setText(f'可见范围 {width:.0f} × {width:.0f} m；坐标轴单位：米')
+        self._reset_view = False
+        self.canvas.draw_idle()
+
     def save_figure(self, path: str, dpi: int = 300):
-        self.figure.savefig(path, dpi=dpi, bbox_inches="tight")
-        return path
+        from core.image_export import save_jpeg
+        return save_jpeg(self.figure, path, dpi=max(400, dpi))

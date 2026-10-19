@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import numpy as np
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, LineString
 from shapely.ops import unary_union
 from algorithms.aco.polygon_decomp import clean_ring, ensure_ccw, reflex_indices
 
@@ -77,13 +77,15 @@ def choose_sweep_direction(pts: List[XY]) -> np.ndarray:
     return best_dir
 
 
-def _strip_segments(poly_pts: List[XY], sweep_dir, line_spacing: float
+def _strip_segments(poly_pts: List[XY], sweep_dir, line_spacing: float, boundary_mode='envelope'
                     ) -> List[Tuple[XY, XY]]:
     """等间距、居中的扫描线；用每条带的投影包络确定航段长度。
 
     每个条带宽度不超过 spacing，条带内任意点到其航段的法向距离
     不超过 spacing/2。由此连续拍摄宽度 >= spacing 时覆盖完整区域。
     """
+    if boundary_mode not in ('inside', 'envelope'):
+        raise ValueError('未知扫描边界模式')
     if not math.isfinite(line_spacing) or line_spacing <= 1e-9:
         raise ValueError("航线间距必须大于 0（请检查相机参数与旁向重叠率）")
     poly_pts = ensure_ccw(clean_ring(poly_pts))
@@ -114,7 +116,13 @@ def _strip_segments(poly_pts: List[XY], sweep_dir, line_spacing: float
         clipped = local_poly.intersection(band)
         if clipped.is_empty or clipped.area <= 0:
             raise RuntimeError("扫描条带退化，未生成完整覆盖方案")
-        left, _, right, _ = clipped.bounds
+        if boundary_mode == 'inside':
+            segment = _longest_segment(local_poly.intersection(LineString([(umin-1, t), (umax+1, t)])))
+            if segment is None:
+                raise RuntimeError('子区内扫描线退化，请检查几何与航线间距')
+            left, right = sorted((segment[0][0], segment[1][0]))
+        else:
+            left, _, right, _ = clipped.bounds
         a = origin + d * left + normal * t
         b = origin + d * right + normal * t
         strips.append((tuple(a), tuple(b)))
@@ -149,6 +157,7 @@ def _longest_segment(geom):
 def plan_region_variants(poly_pts: List[XY], line_spacing: float,
                          sweep_dir: Optional[np.ndarray] = None,
                          boundary_joints: bool = False,
+                         boundary_mode: str = 'envelope',
                          ) -> List[RegionCoverPlan]:
     """生成一个凸子区域的 4 种牛耕式覆盖方案。
 
@@ -160,7 +169,7 @@ def plan_region_variants(poly_pts: List[XY], line_spacing: float,
     if sweep_dir is None:
         sweep_dir = choose_sweep_direction(poly_pts)
     d = _unit(sweep_dir)
-    strips = _strip_segments(poly_pts, d, line_spacing)
+    strips = _strip_segments(poly_pts, d, line_spacing, boundary_mode)
     if not strips:
         raise ValueError("多边形与扫描线无交集，无法生成覆盖路径")
 
