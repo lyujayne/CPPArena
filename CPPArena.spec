@@ -70,7 +70,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="CPPArena-v2.1",
+    name="CPPArena-v2.4",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

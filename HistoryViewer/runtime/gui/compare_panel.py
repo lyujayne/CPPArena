@@ -15,8 +15,9 @@ import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from PySide6.QtCore import Qt, QEvent
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QGroupBox, QHBoxLayout,
-                               QHeaderView, QLabel, QMessageBox, QPushButton,
+                               QHeaderView, QLabel, QMessageBox, QPushButton, QPlainTextEdit,
                                QTableWidget, QTableWidgetItem, QTabWidget,
                                QVBoxLayout, QWidget)
 
@@ -72,10 +73,12 @@ class ComparePanel(QWidget):
         self.btn_route_image.clicked.connect(self.choose_route_images)
         top.addWidget(self.btn_route_image)
         v.addLayout(top)
-        self.failure_label = QLabel('')
-        self.failure_label.setWordWrap(True)
+        self.failure_label = QPlainTextEdit()
+        self.failure_label.setReadOnly(True)
+        self.failure_label.setFixedHeight(94)
+        self.failure_label.setPlaceholderText('运行错误（可滚动查看）')
+        self.failure_label.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.failure_label.setStyleSheet('color:#a33;')
-        self.failure_label.setVisible(False)
         v.addWidget(self.failure_label)
 
         ops = QHBoxLayout()
@@ -86,6 +89,11 @@ class ComparePanel(QWidget):
         self.baseline_combo.currentIndexChanged.connect(self._baseline_changed)
         ops.addWidget(self.baseline_combo, 1)
         v.addLayout(ops)
+
+        coverage_hint = QLabel('覆盖率 = 扫描到的目标面积 / 总任务面积（重复覆盖只计一次，区外不计）；未覆盖为0不代表航程最优。')
+        coverage_hint.setWordWrap(True)
+        coverage_hint.setStyleSheet('color:#475569;font-size:11px;')
+        v.addWidget(coverage_hint)
         ops = QHBoxLayout()
         self.btn_latex = QPushButton("导出 LaTeX")
         self.btn_latex.clicked.connect(self.export_latex)
@@ -176,6 +184,10 @@ class ComparePanel(QWidget):
                 for run in runs:
                     if successful_run(run) and run.get('waypoints'):
                         attach_route_metrics(run, self._datasets.get(name))
+                        from compare.coverage_metrics import coverage_details
+                        coverage = coverage_details(run, self._datasets.get(name), self._camera)
+                        if coverage:
+                            run['metadata']['coverage'] = coverage
 
         # 数据集下拉
         self.ds_combo.blockSignals(True)
@@ -209,10 +221,12 @@ class ComparePanel(QWidget):
             w.setEnabled(on)
 
     def _active_runs(self) -> dict:
-        name = self.ds_combo.currentData()
-        raw = self._results.get(name, {}) if name else {}
+        raw = self._table_runs()
         return {algo: valid for algo, runs in raw.items()
                 if (valid := [run for run in runs if successful_run(run)])}
+
+    def _table_runs(self):
+        return self._results.get(self.ds_combo.currentData(), {})
 
     def _on_ds_changed(self, *_):
         self._refresh_waypoint_algos()
@@ -241,10 +255,10 @@ class ComparePanel(QWidget):
     # ------------------------------------------------------------ 重建
     def rebuild(self):
         name = self.ds_combo.currentData()
-        errors = [f"{algo}：{run['error']}" for algo, runs in self._results.get(name, {}).items()
-                  for run in runs if run.get('error')]
-        self.failure_label.setText('\n'.join(errors))
-        self.failure_label.setVisible(bool(errors))
+        errors = [f"{algo} · seed={run.get('seed', '--')}：{run.get('error') or '结果缺少有效总距离'}"
+                  for algo, runs in self._results.get(name, {}).items()
+                  for run in runs if not successful_run(run)]
+        self.failure_label.setPlainText('\n'.join(errors))
         self._rebuild_table()
         self._dirty_charts = {1, 2}
         self._conv_fig = self._stat_fig = None
@@ -264,7 +278,7 @@ class ComparePanel(QWidget):
             self._ensure_chart(2)
 
     def _rebuild_table(self):
-        runs_by_algo = self._active_runs()
+        runs_by_algo = self._table_runs()
         self.table.clear()
         self.table.setRowCount(0)
         self.table.setColumnCount(0)
@@ -289,7 +303,12 @@ class ComparePanel(QWidget):
             item = self.table.verticalHeaderItem(i)
             item.setToolTip(METRIC_HELP.get(key, key))
         for j, key in enumerate(df.columns):
-            self.table.horizontalHeaderItem(j).setToolTip(key)
+            failed = [run for run in runs_by_algo[key] if not successful_run(run)]
+            header = self.table.horizontalHeaderItem(j)
+            header.setToolTip(key + '\n' + '\n'.join(
+                f"seed={r.get('seed', '--')}：{r.get('error') or '结果缺少有效总距离'}" for r in failed))
+            if failed:
+                header.setForeground(QColor('#b91c1c'))
         for i in range(df.shape[0]):
             for j in range(df.shape[1]):
                 v = df.iat[i, j]
@@ -298,7 +317,11 @@ class ComparePanel(QWidget):
                 else:
                     text = str(v)
                 item = QTableWidgetItem(text)
+                item.setToolTip(f'{df.index[i]}：{v}\n' + METRIC_HELP.get(df.index[i], ''))
                 item.setTextAlignment(Qt.AlignCenter)
+                if any(not successful_run(run) for run in runs_by_algo[df.columns[j]]):
+                    item.setForeground(QColor('#b91c1c'))
+                    item.setBackground(QColor('#fff1f2'))
                 self.table.setItem(i, j, item)
         self._fit_table_columns()
 
@@ -442,7 +465,7 @@ class ComparePanel(QWidget):
         return min(runs, key=lambda r: r.get("total_distance", float("inf")))
 
     def export_latex(self):
-        runs_by_algo = self._active_runs()
+        runs_by_algo = self._table_runs()
         if not runs_by_algo:
             return self._no_data()
         try:
@@ -460,7 +483,7 @@ class ComparePanel(QWidget):
         QMessageBox.information(self, "完成", f"LaTeX 源码已导出：\n{path}")
 
     def export_csv(self):
-        runs_by_algo = self._active_runs()
+        runs_by_algo = self._table_runs()
         if not runs_by_algo:
             return self._no_data()
         df = build_comparison_table(runs_by_algo, baseline=self._baseline)
@@ -538,7 +561,7 @@ class ComparePanel(QWidget):
         QMessageBox.information(self, '导出完成', f'已导出 {len(paths)} 张高清 JPEG：\n' + '\n'.join(str(p) for p in paths))
 
     def generate_report(self):
-        runs_by_algo = self._active_runs()
+        runs_by_algo = self._table_runs()
         if not runs_by_algo:
             return self._no_data()
         path, _ = QFileDialog.getSaveFileName(self, '导出实验摘要（Markdown）',

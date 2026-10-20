@@ -31,6 +31,7 @@ projects/
 .pytest_cache/
 dataset_library/
 pictures/
+/实验数据/
 build_log*.txt
 
 # Generated verification artifacts; keep verification scripts in Git.

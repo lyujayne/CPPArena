@@ -40,12 +40,12 @@ def test_comparison_and_markdown_use_real_coverage_without_tabulate(results, mon
     monkeypatch.setattr(pd.DataFrame, 'to_markdown', forbidden)
     table = build_comparison_table(runs[ds.name], baseline=combos[0].label)
     assert table.loc['有效运行次数', combos[0].label] == 1
-    assert table.loc['扫描足迹覆盖率均值 (%)', combos[0].label] > 99
+    assert table.loc['覆盖率均值 (%)', combos[0].label] > 99
     assert table.loc['未覆盖面积均值 (m²)', combos[0].label] >= 0
     report = generate_report('工作流验收', {}, runs[ds.name], combos[0].label,
                              {}, {}, [42], ['summary_assets/convergence.png'])
     assert all(combo.label in report for combo in combos)
-    assert 'max_iterations' in report and '扫描足迹覆盖率' in report
+    assert 'max_iterations' in report and '覆盖率' in report
     assert '(summary_assets/convergence.png)' in report
 
 

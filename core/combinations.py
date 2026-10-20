@@ -8,23 +8,37 @@ from algorithms.aco import ACOGTSPAlgorithm
 from algorithms.aco.pso_fa3aco import PSOFA3ACOAlgorithm
 from algorithms.aco.enhanced_aco import EnhancedECDACOAlgorithm
 from algorithms.aco.enhanced_ecd_dp import EnhancedECDDPAlgorithm
+from algorithms.decomposition_methods import (TDDecomposition, HMDecomposition,
+    IEEDecomposition, GreeneDecomposition, RGSDecomposition, TDDPDecomposition)
+from algorithms.swarm_planners import DBOPlanner, SSAPlanner, GSIPSOPlanner, IDGWOVNSPlanner
 
 DECOMPOSITIONS = {
     "Bayazit": ("Bayazit 凸分解", ACOGTSPAlgorithm),
     "PSO-DCAS": ("PSO-DCAS 粒子群分割", PSOFA3ACOAlgorithm),
     "Enhanced-ECD": ("增强精确单元分解", EnhancedECDACOAlgorithm),
+    "TD": (TDDecomposition.label, TDDecomposition),
+    "Hertel-Mehlhorn": (HMDecomposition.label, HMDecomposition),
+    "IEE-MILP": (IEEDecomposition.label, IEEDecomposition),
+    "Greene": (GreeneDecomposition.label, GreeneDecomposition),
+    "RGS": (RGSDecomposition.label, RGSDecomposition),
+    "TD-DP": (TDDPDecomposition.label, TDDPDecomposition),
 }
 PLANNERS = {
     "ACO": ("ACO 闭环规划", ACOGTSPAlgorithm),
     "FA3ACO": ("FA3ACO 闭环规划", PSOFA3ACOAlgorithm),
     "Li-DP": ("DP 开放规划（可选严格邻接）", EnhancedECDDPAlgorithm),
+    "DBO": (DBOPlanner.label, DBOPlanner),
+    "SSA": (SSAPlanner.label, SSAPlanner),
+    "GS-IPSO": (GSIPSOPlanner.label, GSIPSOPlanner),
+    "IDGWO-VNS": (IDGWOVNSPlanner.label, IDGWOVNSPlanner),
 }
 
 
 def component_defaults(kind, key):
     catalog = DECOMPOSITIONS if kind == "decomposition" else PLANNERS
     defaults = catalog[key][1].default_params
-    if getattr(catalog[key][1], 'component_plugin', False):
+    if (getattr(catalog[key][1], 'component_plugin', False) or
+            getattr(catalog[key][1], 'independent_component_params', False)):
         return {k: deepcopy(v) for k, v in defaults.items() if k != 'seed'}
     return {k: deepcopy(v) for k, v in defaults.items() if k != "seed"
             and (k.startswith("pso_") == (kind == "decomposition"))}
@@ -105,6 +119,9 @@ class ComposedAlgorithm(ACOGTSPAlgorithm):
         result.metadata["effective_component_params"] = self._effective
         result.metadata['component_sources'] = {
             kind: {'path': getattr(component, 'source_path', ''), 'sha256': getattr(component, 'source_hash', '')}
+            for kind, component in (('decomposition', self._decomp), ('planning', self._planner))}
+        result.metadata['component_implementation_scope'] = {
+            kind: getattr(component, 'description', '')
             for kind, component in (('decomposition', self._decomp), ('planning', self._planner))}
         return result
 

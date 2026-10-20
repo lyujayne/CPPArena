@@ -1,14 +1,15 @@
 """Portable, offline experiment archives. No algorithm is run during loading."""
 import csv
-import io
 import json
 import math
+import re
 import shutil
 import tempfile
 import zipfile
-from copy import deepcopy
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 from xml.etree import ElementTree as ET
 
 from config.default_params import APP_VERSION
@@ -29,9 +30,11 @@ def json_safe(value):
     return value
 
 
-def dump_json(path, value):
-    Path(path).write_text(json.dumps(json_safe(value), ensure_ascii=False, indent=2,
-                                    allow_nan=False), encoding='utf-8')
+def dump_json(path, value, *, already_safe=False):
+    # Stream chunks to disk instead of allocating a second full JSON string.
+    with Path(path).open('w', encoding='utf-8') as stream:
+        json.dump(value if already_safe else json_safe(value), stream,
+                  ensure_ascii=False, indent=2, allow_nan=False)
 
 
 def make_record(project_name, datasets, camera, combinations, results, logs='', view=None, status='completed', seeds=None):
@@ -42,7 +45,7 @@ def make_record(project_name, datasets, camera, combinations, results, logs='', 
         'status': status, 'camera': camera, 'datasets': [ds.to_dict() for ds in datasets],
         'seeds': seeds if seeds is not None else sorted({r['seed'] for ds in results.values()
                   for runs in ds.values() for r in runs if 'seed' in r}),
-        'combinations': [c.to_dict() for c in combinations], 'results': deepcopy(results),
+        'combinations': [c.to_dict() for c in combinations], 'results': results,
         'logs': logs, 'view': view or {},
     })
 
@@ -52,6 +55,9 @@ def _plot_run(path, ds, run, decomposition=False):
 
 
 def _plot_runs(path, ds, runs, decomposition=False):
+    import matplotlib
+    matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+    matplotlib.rcParams['axes.unicode_minus'] = False
     from matplotlib.figure import Figure
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.patches import Polygon
@@ -91,8 +97,16 @@ def _plot_runs(path, ds, runs, decomposition=False):
            title=f"{ds.name}\n" + ('图形分割' if decomposition else '路径规划轨迹'))
     ax.grid(alpha=.22)
     from core.image_export import save_jpeg
-    save_jpeg(figure, path)
-    figure.clear()
+    try:
+        save_jpeg(figure, path)
+    finally:
+        # Agg buffers are tens of MB per 400-DPI image. Break figure/canvas
+        # ownership and collect artists before rendering the next run.
+        figure.clear()
+        figure.set_canvas(None)
+        del ax
+        import gc
+        gc.collect()
 
 
 def _split_kml(path, ds, run):
@@ -123,73 +137,93 @@ def _split_kml(path, ds, run):
     ET.ElementTree(root).write(path, encoding='utf-8', xml_declaration=True)
 
 
+def _write_experiment_files(root, record, progress=None):
+    """Write complete portable artifacts from a private record copy."""
+    (root / 'assets').mkdir()
+    metrics = []
+    total = sum(len(runs) for values in record['results'].values() for runs in values.values())
+    done = 0
+    for ds_index, data in enumerate(record['datasets']):
+        ds = Dataset.from_dict(data)
+        if progress:
+            progress(done, total, f'准备数据集：{ds.name}')
+        if ds.bg_image_path and Path(ds.bg_image_path).is_file():
+            target = f'assets/background_{ds_index}.jpg'
+            from PIL import Image
+            with Image.open(ds.bg_image_path) as source:
+                source.convert('RGB').save(root / target, quality=98, subsampling=0)
+            data['bg_image_path'] = target
+        else:
+            data['bg_image_path'] = None
+        for combo_index, (label, runs) in enumerate(record['results'].get(ds.name, {}).items()):
+            for run_index, run in enumerate(runs):
+                relative = f'runs/d{ds_index}_c{combo_index}_r{run_index}'
+                directory = root / relative
+                directory.mkdir(parents=True)
+                if progress:
+                    progress(done, total, f'{ds.name} · {label} · seed={run.get("seed")}：保存航点与结果')
+                dump_json(directory / 'result.json', run, already_safe=True)
+                dump_json(directory / 'segmentation.json', {
+                    'crs': f'EPSG:{ds.epsg}', 'units': 'metres',
+                    'source_regions': [r.to_dict() for r in ds.regions],
+                    'subregions': run.get('subregion_sequence', [])})
+                if not run.get('error'):
+                    tf = CoordTransform(epsg=ds.epsg)
+                    coordinates = [(*tf.utm_to_lonlat(*p), record['camera']['flight_height_m'])
+                                   for p in run.get('waypoints', [])]
+                    export_waypoints(coordinates, str(directory / 'waypoints.kml'), label)
+                    export_waypoints(coordinates, str(directory / 'waypoints.csv'), label)
+                    _split_kml(directory / 'segmentation.kml', ds, run)
+                    from core.path_annotations import subregion_endpoints
+                    with (directory / 'entry_exit.csv').open('w', newline='', encoding='utf-8-sig') as stream:
+                        writer = csv.writer(stream)
+                        writer.writerow(['访问序号', '子区编号', '点类型', '东向(m)', '北向(m)', '经度', '纬度'])
+                        for item in subregion_endpoints(run):
+                            for key, point_label in (('entry', '入口'), ('exit', '出口')):
+                                x, y = item[key]
+                                writer.writerow([item['order'], item['subregion_id'], point_label, x, y, *tf.utm_to_lonlat(x, y)])
+                    if progress:
+                        progress(done, total, f'{label} · seed={run.get("seed")}：生成路线 JPEG')
+                    _plot_run(directory / 'trajectory.jpg', ds, run)
+                    _plot_run(directory / 'segmentation.jpg', ds, run, decomposition=True)
+                run['artifacts'] = relative
+                metrics.append({'dataset': ds.name, 'combination': label, 'seed': run.get('seed'),
+                    'started_at': run.get('started_at'), 'finished_at': run.get('finished_at'),
+                    'runtime_s': run.get('runtime'), 'elapsed_total_s': run.get('elapsed_total'),
+                    'distance_m': run.get('total_distance'), 'turns': run.get('total_turns'),
+                    'coverage_ratio': ((run.get('metadata') or {}).get('coverage') or {}).get('covered_ratio'),
+                    **{key: ((run.get('metadata') or {}).get('coverage') or {}).get(key)
+                       for key in ('covered_area_m2', 'target_area_m2', 'uncovered_area_m2')},
+                    **{key: (run.get('metadata') or {}).get('route_metrics', {}).get(key)
+                       for key in ('subregion_transfer_m', 'outside_distance_m', 'redundancy_pct',
+                                   'sweep_reversals', 'non_scan_distance_m')},
+                    'error': run.get('error', '')})
+                done += 1
+                if progress:
+                    progress(done, total, f'已保存{done}/{total}次运行')
+    if progress:
+        progress(done, total, '写入完整实验索引')
+    dump_json(root / 'experiment.json', record, already_safe=True)
+    dump_json(root / 'metrics.json', metrics)
+    if metrics:
+        with (root / 'metrics.csv').open('w', encoding='utf-8-sig', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(metrics[0]))
+            writer.writeheader()
+            writer.writerows(metrics)
+    (root / 'experiment.log').write_text(record.get('logs', ''), encoding='utf-8')
+    (root / 'README.txt').write_text(
+        f'CPP Arena {APP_VERSION} 完整实验记录\n使用独立历史实验平台导入此文件夹或打开兼容ZIP。\n'
+        'experiment.json 保存全部结果与视图；runs 下含 KML、分割几何、图片和运行数据。\n'
+        '坐标与距离单位为米。失败任务保留错误与参数，不伪造路径。\n', encoding='utf-8')
+
+
 def export_bundle(path, record):
-    """Write atomically; an existing archive survives an export failure."""
+    """Legacy ZIP export; use folder export for the current UI workflow."""
     path = Path(path)
-    record = deepcopy(record)
-    with tempfile.TemporaryDirectory(prefix='cpp_export_') as staging:
+    record = json_safe(record)
+    with tempfile.TemporaryDirectory(prefix="cpp_export_") as staging:
         root = Path(staging)
-        (root / 'assets').mkdir()
-        metrics = []
-        for ds_index, data in enumerate(record['datasets']):
-            ds = Dataset.from_dict(data)
-            if ds.bg_image_path and Path(ds.bg_image_path).is_file():
-                target = f'assets/background_{ds_index}.jpg'
-                from PIL import Image
-                with Image.open(ds.bg_image_path) as source:
-                    source.convert('RGB').save(root / target, quality=98, subsampling=0)
-                data['bg_image_path'] = target
-            else:
-                data['bg_image_path'] = None
-            for combo_index, (label, runs) in enumerate(record['results'].get(ds.name, {}).items()):
-                for run_index, run in enumerate(runs):
-                    relative = f'runs/d{ds_index}_c{combo_index}_r{run_index}'
-                    directory = root / relative
-                    directory.mkdir(parents=True)
-                    dump_json(directory / 'result.json', run)
-                    dump_json(directory / 'segmentation.json', {
-                        'crs': f'EPSG:{ds.epsg}', 'units': 'metres',
-                        'source_regions': [r.to_dict() for r in ds.regions],
-                        'subregions': run.get('subregion_sequence', [])})
-                    if not run.get('error'):
-                        tf = CoordTransform(epsg=ds.epsg)
-                        coordinates = [(*tf.utm_to_lonlat(*p), record['camera']['flight_height_m'])
-                                       for p in run.get('waypoints', [])]
-                        export_waypoints(coordinates, str(directory / 'waypoints.kml'), label)
-                        export_waypoints(coordinates, str(directory / 'waypoints.csv'), label)
-                        _split_kml(directory / 'segmentation.kml', ds, run)
-                        from core.path_annotations import subregion_endpoints
-                        with (directory / 'entry_exit.csv').open('w', newline='', encoding='utf-8-sig') as stream:
-                            writer = csv.writer(stream)
-                            writer.writerow(['访问序号', '子区编号', '点类型', '东向(m)', '北向(m)', '经度', '纬度'])
-                            for item in subregion_endpoints(run):
-                                for key, label in (('entry', '入口'), ('exit', '出口')):
-                                    x, y = item[key]
-                                    writer.writerow([item['order'], item['subregion_id'], label, x, y, *tf.utm_to_lonlat(x, y)])
-                        _plot_run(directory / 'trajectory.jpg', ds, run)
-                        _plot_run(directory / 'segmentation.jpg', ds, run, decomposition=True)
-                    run['artifacts'] = relative
-                    metrics.append({'dataset': ds.name, 'combination': label, 'seed': run.get('seed'),
-                        'started_at': run.get('started_at'), 'finished_at': run.get('finished_at'),
-                        'runtime_s': run.get('runtime'), 'elapsed_total_s': run.get('elapsed_total'),
-                        'distance_m': run.get('total_distance'), 'turns': run.get('total_turns'),
-                        'coverage_ratio': run.get('metadata', {}).get('coverage', {}).get('covered_ratio'),
-                        **{key: (run.get('metadata') or {}).get('route_metrics', {}).get(key)
-                           for key in ('subregion_transfer_m', 'outside_distance_m', 'redundancy_pct',
-                                       'sweep_reversals', 'non_scan_distance_m')},
-                        'error': run.get('error', '')})
-        dump_json(root / 'experiment.json', record)
-        dump_json(root / 'metrics.json', metrics)
-        if metrics:
-            with (root / 'metrics.csv').open('w', encoding='utf-8-sig', newline='') as stream:
-                writer = csv.DictWriter(stream, fieldnames=list(metrics[0]))
-                writer.writeheader()
-                writer.writerows(metrics)
-        (root / 'experiment.log').write_text(record.get('logs', ''), encoding='utf-8')
-        (root / 'README.txt').write_text(
-            'CPP Arena 2.1 完整实验包\n使用独立历史实验平台打开此 ZIP。\n'
-            'experiment.json 保存全部结果与视图；runs 下含 KML、分割几何、图片和运行数据。\n'
-            '坐标与距离单位为米。失败任务保留错误与参数，不伪造路径。\n', encoding='utf-8')
+        _write_experiment_files(root, record)
         # Use a unique sibling to avoid overwriting partially written exports.
         with tempfile.NamedTemporaryFile(dir=path.parent, suffix='.tmp', delete=False) as stream:
             temporary = Path(stream.name)
@@ -220,3 +254,145 @@ def load_bundle(path, asset_directory):
                 target.write_bytes(archive.read(image))
                 ds['bg_image_path'] = str(target)
     return record
+
+
+def _validate_record(record):
+    if not isinstance(record, dict) or record.get('schema') != 'cpp-arena-experiment' or record.get('schema_version') != 1:
+        raise ValueError('不是包含原始几何和相机快照的完整实验记录')
+    if not isinstance(record.get('datasets'), list) or not isinstance(record.get('results'), dict):
+        raise ValueError('实验缺少数据集或运行结果')
+    if not isinstance(record.get('camera'), dict):
+        raise ValueError('实验缺少相机参数快照')
+    return record
+
+
+def _experiment_stem(name, exported_at=None):
+    name = str(name).strip()
+    if not name:
+        raise ValueError('请填写实验名称')
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name).strip(' .')
+    if not safe:
+        raise ValueError('实验名称须包含有效字符')
+    return (exported_at or datetime.now()).strftime('%Y%m%d_%H%M%S') + '_' + safe[:100]
+
+
+def _publish_directory(staged, library, stem):
+    """Publish a complete sibling directory without replacing an existing record."""
+    library = Path(library).resolve()
+    if staged.resolve().parent.parent != library:
+        raise ValueError('临时实验目录不在目标实验库中')
+    number = 1
+    while True:
+        destination = library / (stem if number == 1 else f'{stem} ({number})')
+        if destination.parent.resolve() != library:
+            raise ValueError('实验目录必须位于目标实验库内')
+        if destination.exists():
+            number += 1
+            continue
+        try:
+            staged.rename(destination)
+            return destination
+        except FileExistsError:
+            number += 1
+
+
+@contextmanager
+def _staging_directory(library, prefix='.cpp_export_'):
+    """Disposable sibling with the library's inherited permissions.
+
+    Python 3.13 Windows TemporaryDirectory creates a protected private ACL;
+    moving its child into a shared library would retain that inaccessible ACL.
+    Normal mkdir inherits the target library's existing reader permissions.
+    """
+    library = Path(library).resolve()
+    root = library / (prefix + uuid4().hex)
+    root.mkdir()
+    try:
+        yield root
+    finally:
+        if root.resolve().parent != library:
+            raise ValueError('拒绝清理实验库以外的临时目录')
+        if root.exists():
+            shutil.rmtree(root)
+
+
+def export_experiment_directory(library, record, experiment_name, exported_at=None):
+    """Save an atomic timestamp+name folder directly into the history library."""
+    exported_at = exported_at or datetime.now().astimezone()
+    stem = _experiment_stem(experiment_name, exported_at)
+    record = json_safe(_validate_record(record))
+    record['experiment_name'] = str(experiment_name).strip()
+    record['exported_at'] = exported_at.isoformat()
+    library = Path(library).resolve()
+    library.mkdir(parents=True, exist_ok=True)
+    with _staging_directory(library) as temporary:
+        staged = Path(temporary) / 'experiment'
+        staged.mkdir()
+        _write_experiment_files(staged, record)
+        return _publish_directory(staged, library, stem)
+
+
+def _resolve_backgrounds(record, directory):
+    directory = Path(directory).resolve()
+    for ds in record['datasets']:
+        image = ds.get('bg_image_path')
+        if not image:
+            continue
+        name = Path(image)
+        if (not str(image).startswith('assets/') or '..' in name.parts or name.is_absolute()
+                or name.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.bmp', '.tif')):
+            raise ValueError('实验底图路径必须位于自身 assets 文件夹')
+        target = (directory / name).resolve()
+        if not target.is_relative_to(directory) or not target.is_file():
+            raise ValueError('实验底图文件缺失或路径无效：' + str(image))
+        ds['bg_image_path'] = str(target)
+    return record
+
+
+def load_experiment_directory(directory):
+    directory = Path(directory).resolve()
+    record = _validate_record(json.loads((directory / 'experiment.json').read_text(encoding='utf-8')))
+    return _resolve_backgrounds(record, directory)
+
+
+def _extract_portable_archive(path, directory):
+    directory = Path(directory).resolve()
+    with zipfile.ZipFile(path) as archive:
+        for item in archive.infolist():
+            member = Path(item.filename)
+            target = (directory / member).resolve()
+            if (member.is_absolute() or '..' in member.parts or not target.is_relative_to(directory)
+                    or (item.external_attr >> 16) & 0o170000 == 0o120000):
+                raise ValueError('实验包包含无效文件路径')
+        archive.extractall(directory)
+
+
+def import_experiment(source, library):
+    """Copy an external folder/archive/legacy snapshot into permanent storage."""
+    source, library = Path(source).resolve(), Path(library).resolve()
+    if source.is_dir():
+        record = load_experiment_directory(source)
+        if source.parent == library:
+            return source
+        if library.is_relative_to(source):
+            raise ValueError('目标实验库不能位于待导入实验文件夹内部')
+        if any(p.is_symlink() for p in source.rglob('*')):
+            raise ValueError('实验文件夹含外部链接，请使用实际文件导入')
+    elif source.suffix.lower() == '.json':
+        record = _validate_record(json.loads(source.read_text(encoding='utf-8')))
+        return export_experiment_directory(library, record, record.get('experiment_name') or record.get('project') or source.stem)
+    elif source.suffix.lower() not in ('.zip', '.cppx'):
+        raise ValueError('请选择完整实验文件夹或 .cppx/.zip/.json 实验记录')
+    library.mkdir(parents=True, exist_ok=True)
+    with _staging_directory(library, '.cpp_import_') as temporary:
+        staged = Path(temporary) / 'experiment'
+        if source.is_dir():
+            shutil.copytree(source, staged)
+        else:
+            staged.mkdir()
+            _extract_portable_archive(source, staged)
+            record = load_experiment_directory(staged)
+        name = record.get('experiment_name') or record.get('project') or source.stem
+        stem = source.name if source.is_dir() and re.fullmatch(r'\d{8}_\d{6}_.+', source.name) else _experiment_stem(name)
+        load_experiment_directory(staged)  # Validate copied assets before publishing.
+        return _publish_directory(staged, library, stem)

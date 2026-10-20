@@ -19,7 +19,7 @@ if not defined PY (
 
 echo [CPP Arena] Python: %PY%
 
-"%PY%" -c "import PySide6, shapely, pyproj, matplotlib, numpy, pandas, lxml" >nul 2>nul
+"%PY%" -c "import PySide6, shapely, pyproj, matplotlib, numpy, pandas, scipy, lxml" >nul 2>nul
 if errorlevel 1 (
     echo [CPP Arena] 正在安装依赖，请稍候...
     "%PY%" -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
@@ -27,7 +27,7 @@ if errorlevel 1 (
         echo [CPP Arena] 清华镜像不可用，改用官方 PyPI...
         "%PY%" -m pip install -r requirements.txt
     )
-    "%PY%" -c "import PySide6, shapely, pyproj, matplotlib, numpy, pandas, lxml" >nul 2>nul
+    "%PY%" -c "import PySide6, shapely, pyproj, matplotlib, numpy, pandas, scipy, lxml" >nul 2>nul
     if errorlevel 1 (
         echo [错误] 依赖安装失败，请手动执行：
         echo   %PY% -m pip install -r requirements.txt

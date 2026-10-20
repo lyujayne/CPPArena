@@ -25,6 +25,7 @@ class ResultPanel(QWidget):
         self.lbl_turns = QLabel("--")
         self.lbl_runtime = QLabel("--")
         self.lbl_coverage = QLabel("--")
+        self.lbl_uncovered = QLabel('--')
         self.lbl_objective = QLabel("--")
         self.lbl_objective.setWordWrap(True)
         self.lbl_order = QLabel("--")
@@ -34,7 +35,8 @@ class ResultPanel(QWidget):
         form.addRow("总飞行距离 (m)", self.lbl_dist)
         form.addRow("航向拐点数(>5°)", self.lbl_turns)
         form.addRow("运行耗时 (s)", self.lbl_runtime)
-        form.addRow("扫描足迹覆盖率", self.lbl_coverage)
+        form.addRow('覆盖率', self.lbl_coverage)
+        form.addRow('未覆盖面积 (m²)', self.lbl_uncovered)
         form.addRow("优化目标", self.lbl_objective)
         v.addWidget(g)
         self.lbl_note = QLabel('')
@@ -68,7 +70,7 @@ class ResultPanel(QWidget):
         self.lbl_note.hide()
         for lbl in (self.lbl_algo, self.lbl_seed, self.lbl_dist,
                     self.lbl_turns, self.lbl_runtime, self.lbl_order,
-                    self.lbl_coverage, self.lbl_objective):
+                    self.lbl_coverage, self.lbl_uncovered, self.lbl_objective):
             lbl.setText("--")
 
     def show_run(self, run: dict):
@@ -83,6 +85,8 @@ class ResultPanel(QWidget):
                 self.log.appendHtml('<span style="color:#b91c1c">' + escape(run['error']) + '</span>')
             return
         self.lbl_algo.setText(str(run.get("algorithm", "--")))
+        scopes = (run.get('metadata') or {}).get('component_implementation_scope') or {}
+        self.lbl_algo.setToolTip('\n'.join(f'{kind}: {text}' for kind, text in scopes.items()))
         self.lbl_seed.setText(str(run.get("seed", "--")))
         self.lbl_dist.setText(f"{run.get('total_distance', float('nan')):.2f}")
         self.lbl_turns.setText(str(run.get("total_turns", "--")))
@@ -95,8 +99,11 @@ class ResultPanel(QWidget):
         notes = [coverage.get('warning', ''), meta.get('gtsp', {}).get('paper_extension', '')]
         self.lbl_note.setText('\n'.join(note for note in notes if note))
         self.lbl_note.setVisible(bool(self.lbl_note.text()))
-        ratio = coverage.get("covered_ratio")
-        self.lbl_coverage.setText(f"{ratio*100:.4f}%（连续拍摄模型）" if ratio is not None else "--")
+        from compare.coverage_metrics import format_coverage, format_area, coverage_tooltip
+        self.lbl_coverage.setText(format_coverage(coverage))
+        self.lbl_coverage.setToolTip(coverage_tooltip(coverage))
+        self.lbl_uncovered.setText(format_area(coverage.get('uncovered_area_m2')))
+        self.lbl_uncovered.setToolTip('0表示当前相机参数与连续扫描模型下无漏扫，不代表路线最优。非零小数不会四舍五入成0。')
         objective = meta.get("gtsp", {}).get("objective")
         self.lbl_objective.setText("开放子区连接距离（不含起降和内部扫描）"
             if objective == "open_inter_region_distance" else "完整任务距离")

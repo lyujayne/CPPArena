@@ -27,12 +27,12 @@ from core.experiment_record import ExperimentRecorder
 from core.experiment_runner import ExperimentRunner
 from core.registry import AlgorithmRegistry
 from core.combinations import Combination, DECOMPOSITIONS, COMPONENT_LOAD_ERRORS, build_combination_jobs
-from core.experiment_bundle import make_record, dump_json, export_bundle, json_safe
+from core.experiment_bundle import make_record, dump_json, json_safe
 from core.drawing_scale import validate_regions, calibrate_dataset
 from config.app_settings import AppSettings
 from config.default_params import (ALGORITHM_DEFAULTS, ALGORITHM_META,
                                    APP_NAME, APP_VERSION, BASE_DIR, RESOURCE_DIR,
-                                   CAMERA_DEFAULTS, EXPERIMENT_DIR,
+                                   CAMERA_DEFAULTS, EXPERIMENT_DIR, HISTORY_EXPERIMENT_DIR,
                                    PLUGIN_DIR, PROJECT_DIR)
 from data.coord_transform import CoordTransform
 from data.satellite_tiles import fetch_satellite_basemap
@@ -169,6 +169,9 @@ class MainWindow(QMainWindow):
         self._ds_counter = 0
         self._satellite_tasks = []
         self._record = None
+        self._export_worker = None
+        self._export_thread = None
+        self._export_dialog = None
 
         self._build_ui()
         self._build_menus()
@@ -213,6 +216,8 @@ class MainWindow(QMainWindow):
         self.decomp_algo_combo.setToolTip("选择分解预览使用哪个算法的分割方式")
         for key, (label, cls) in DECOMPOSITIONS.items():
             self.decomp_algo_combo.addItem(label, key)
+            self.decomp_algo_combo.setItemData(self.decomp_algo_combo.count()-1,
+                getattr(cls, 'description', ''), Qt.ToolTipRole)
         self.btn_decomp_compare = QPushButton("分解对比")
         self.btn_decomp_compare.setToolTip("弹出新窗口，并排对比各算法对每个地块的分割结果")
         self.route_check = QCheckBox("显示路径（移动路径+访问顺序）")
@@ -506,26 +511,109 @@ class MainWindow(QMainWindow):
                 'selected_run': self.run_combo.currentData()}
 
     def _export_experiment(self):
+        if self._export_thread is not None:
+            self._export_dialog.show()
+            self._export_dialog.raise_()
+            return
+        if self._thread is not None:
+            QMessageBox.information(self, '完整导出', '请等待当前实验结束后再完整导出。')
+            return
         if not self._record:
             QMessageBox.information(self, '完整导出', '请先完成一次组合实验。')
             return
-        path, _ = QFileDialog.getSaveFileName(self, '完整导出实验',
-            os.path.join(EXPERIMENT_DIR, self._record['id'] + '.cppx'),
-            'CPP Arena 实验包 (*.cppx);;ZIP (*.zip)')
-        if not path:
+        name, accepted = QInputDialog.getText(self, '命名并完整导出实验', '实验名称：',
+            text=self._record.get('experiment_name', ''))
+        if not accepted:
             return
-        if not path.lower().endswith(('.cppx', '.zip')):
-            path += '.cppx'
+        if not name.strip():
+            QMessageBox.warning(self, '实验名称为空', '请输入实验名称后再导出。')
+            return
         try:
-            record = deepcopy(self._record)
+            # Saved results are immutable. Copy only small editable context;
+            # the worker streams the large shared snapshot without duplicating it.
+            record = dict(self._record)
+            record['datasets'] = deepcopy(self._record['datasets'])
             self._sync_record_backgrounds(record)
             record['view'] = self._view_state()
-            export_bundle(path, record)
-            self.experiment_panel.append_log('完整实验包已导出：' + path)
-            self.statusBar().showMessage('完整实验包已导出：' + path, 8000)
+            record['comparison'] = {'baseline': self.compare_panel._baseline,
+                'active_dataset': self.compare_panel.ds_combo.currentData(), 'tab': self.compare_panel.tabs.currentIndex()}
+            record['logs'] = self.experiment_panel.log.toPlainText()
+            from gui.experiment_export import ExperimentExportWorker
+            self._export_name = name.strip()
+            dialog = QProgressDialog('正在后台准备实验…', '取消导出', 0, 0, self)
+            dialog.setWindowTitle('完整导出实验')
+            dialog.setWindowModality(Qt.NonModal)
+            dialog.setMinimumDuration(0)
+            dialog.setAutoClose(False)
+            dialog.setAutoReset(False)
+            dialog.setFixedSize(640, 160)
+            label = QLabel('正在后台准备实验…')
+            label.setWordWrap(True)
+            dialog.setLabel(label)
+            self._export_dialog = dialog
+            self._export_worker = ExperimentExportWorker(HISTORY_EXPERIMENT_DIR, record, self._export_name)
+            self._export_thread = QThread(self)
+            self._export_worker.moveToThread(self._export_thread)
+            self._export_thread.started.connect(self._export_worker.run)
+            self._export_worker.progress.connect(self._on_export_progress)
+            self._export_worker.succeeded.connect(self._on_export_succeeded)
+            self._export_worker.failed.connect(self._on_export_failed)
+            self._export_worker.cancelled.connect(self._on_export_cancelled)
+            self._export_worker.finished.connect(self._export_thread.quit)
+            self._export_worker.finished.connect(self._export_worker.deleteLater)
+            self._export_thread.finished.connect(self._export_thread.deleteLater)
+            self._export_thread.finished.connect(self._on_export_worker_finished)
+            dialog.canceled.connect(self._cancel_export)
+            self.experiment_panel.btn_export.setEnabled(False)
+            self.experiment_panel.btn_run.setEnabled(False)
+            self.experiment_panel.append_log('开始后台完整导出：' + self._export_name)
+            self._export_thread.start()
+            dialog.show()
         except Exception as exc:
             self.experiment_panel.append_log('导出报错：' + str(exc))
             QMessageBox.critical(self, '导出失败', str(exc))
+
+    @Slot(int, int, str)
+    def _on_export_progress(self, done, total, stage):
+        self._export_dialog.setRange(0, total if total else 0)
+        self._export_dialog.setValue(done)
+        self._export_dialog.setLabelText(stage[:180])
+        self.statusBar().showMessage(f'导出 {done}/{total}：{stage[:120]}')
+
+    @Slot(str)
+    def _on_export_succeeded(self, path):
+        self._record['experiment_name'] = self._export_name
+        self.experiment_panel.append_log('完整实验文件夹已保存到历史实验库：' + path)
+        self.statusBar().showMessage('实验已保存：' + path, 8000)
+        self._export_dialog.hide()
+        QMessageBox.information(self, '实验导出完成',
+            '已完整保存到历史实验平台默认实验库，文件夹名为“时间_实验名称”：\n' + path)
+
+    @Slot(str)
+    def _on_export_failed(self, message):
+        self.experiment_panel.append_log('导出报错：' + message, error=True)
+        self._export_dialog.hide()
+        QMessageBox.critical(self, '导出失败', message)
+
+    @Slot()
+    def _on_export_cancelled(self):
+        self.experiment_panel.append_log('已取消导出，未完成的临时文件夹已清理')
+        self.statusBar().showMessage('已取消导出', 6000)
+
+    @Slot()
+    def _cancel_export(self):
+        if self._export_worker is not None:
+            self._export_worker.cancel()
+            self.statusBar().showMessage('正在取消导出并清理临时文件…')
+
+    @Slot()
+    def _on_export_worker_finished(self):
+        dialog = self._export_dialog
+        self._export_worker = self._export_thread = self._export_dialog = None
+        dialog.close()
+        dialog.deleteLater()
+        self.experiment_panel.btn_export.setEnabled(not self.experiment_panel._running)
+        self.experiment_panel.btn_run.setEnabled(not self.experiment_panel._running)
 
     def _sync_record_backgrounds(self, record):
         # Background download may finish after the solver's immutable snapshot.
@@ -885,7 +973,7 @@ class MainWindow(QMainWindow):
 
     # ================================================================ 实验
     def run_experiment(self, mode='combinations'):
-        if self._thread is not None:
+        if self._thread is not None or self._export_thread is not None:
             return
         panel = self.experiment_panel
         if not panel.combinations:
@@ -1280,6 +1368,11 @@ class MainWindow(QMainWindow):
         self.sb_algo.setText(f"组合实验 · v{APP_VERSION}")
 
     def closeEvent(self, event):
+        if self._export_thread is not None:
+            self._cancel_export()
+            self._export_thread.finished.connect(self.close)
+            event.ignore()
+            return
         if self._thread is not None:
             self.runner.cancel()
             # Coordinator polls every50ms and kills a non-cooperating child.

@@ -7,7 +7,7 @@
 import json
 import os
 
-from config.default_params import BASE_DIR, PLUGIN_DIR
+from config.default_params import BASE_DIR, PLUGIN_DIR, resolve_versioned_path
 
 SETTINGS_PATH = os.path.join(BASE_DIR, "settings.json")
 
@@ -44,6 +44,8 @@ class AppSettings:
             if isinstance(saved, dict):
                 self.data.update({k: v for k, v in saved.items()
                                   if k in DEFAULT_SETTINGS})
+                self.data['recent_projects'] = [resolve_versioned_path(path) for path in self.data['recent_projects']]
+                self.data['plugin_dir'] = resolve_versioned_path(self.data['plugin_dir'])
         except Exception:
             pass
 

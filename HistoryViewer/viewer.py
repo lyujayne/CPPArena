@@ -7,7 +7,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parent
 parser = argparse.ArgumentParser(description='CPP Arena offline experiment viewer')
-parser.add_argument('experiment', nargs='?', help='Optional .cppx/.zip/.json experiment')
+parser.add_argument('experiment', nargs='?', help='Optional experiment folder or .cppx/.zip/.json record')
 parser.add_argument('--check', metavar='OUTPUT_JSON', help='Verify startup and exit without an interactive event loop')
 arguments = parser.parse_args()
 if arguments.check:
@@ -25,13 +25,13 @@ def main():
     apply_theme(app)
     window = HistoryWindow()
     if arguments.experiment:
-        window.library.setCurrentItem(window._add_path(arguments.experiment))
         window.open_path(arguments.experiment)
     window.show()
     if arguments.check:
         app.processEvents()
         assert not any(name == 'algorithms' or name.startswith('algorithms.') for name in sys.modules)
         output = {'window': window.windowTitle(), 'standalone': True,
+                  'library_directory': str(window.library_directory),
                   'algorithm_modules_loaded': False, 'experiment_loaded': window._record is not None,
                   'runs_in_selector': window.run_combo.count()}
         destination = Path(arguments.check)

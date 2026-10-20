@@ -1,13 +1,16 @@
 """Standalone history library, sharing the live result widgets without solving."""
 import json
 import tempfile
+import re
+from html import escape
 from pathlib import Path
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
     QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
-from config.default_params import APP_VERSION, EXPERIMENT_DIR
-from core.experiment_bundle import load_bundle
+from config.default_params import APP_VERSION, HISTORY_EXPERIMENT_DIR as EXPERIMENT_DIR
+from core.experiment_bundle import load_experiment_directory, import_experiment
 from data.dataset import Dataset
 from gui.path_canvas import PathCanvas
 from gui.compare_panel import ComparePanel
@@ -15,28 +18,39 @@ from gui.result_panel import ResultPanel
 
 
 class HistoryWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, library_dir=None):
         super().__init__()
         self.setWindowTitle(f'CPP Arena v{APP_VERSION} · 历史实验平台（离线）')
         self.resize(1480, 900)
         self._record = None
         self._datasets = []
+        self.library_scan_errors = []
+        self.library_directory = Path(library_dir or EXPERIMENT_DIR).resolve()
+        self.library_directory.mkdir(parents=True, exist_ok=True)
         self._assets = tempfile.TemporaryDirectory(prefix='cpp_history_')
         splitter = QSplitter(Qt.Horizontal)
         library = QWidget()
         left = QVBoxLayout(library)
         left.addWidget(QLabel('历史实验库'))
         row = QHBoxLayout()
-        open_button = QPushButton('打开实验包')
+        open_button = QPushButton('导入旧实验包')
         open_button.clicked.connect(self.open_dialog)
-        directory_button = QPushButton('扫描文件夹')
+        directory_button = QPushButton('导入实验文件夹')
         directory_button.clicked.connect(self.scan_dialog)
         row.addWidget(open_button); row.addWidget(directory_button)
+        left.addLayout(row)
+        row = QHBoxLayout()
+        refresh = QPushButton('刷新实验库')
+        refresh.clicked.connect(self.refresh_library)
+        reveal = QPushButton('打开默认实验库')
+        reveal.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.library_directory))))
+        row.addWidget(refresh)
+        row.addWidget(reveal)
         left.addLayout(row)
         self.library = QListWidget()
         self.library.itemClicked.connect(self._open_item)
         left.addWidget(self.library, 1)
-        self.info = QLabel('支持 .cppx / .zip 完整实验包；自动列出本机新版本历史记录。')
+        self.info = QLabel('支持完整实验文件夹，兼容 .cppx / .zip / .json；导入后永久保存到默认实验库。')
         self.info.setWordWrap(True)
         left.addWidget(self.info)
         self.ds_combo = QComboBox()
@@ -67,7 +81,7 @@ class HistoryWindow(QMainWindow):
         self.comparison_window.resize(1320, 880)
         self.comparison_window.setCentralWidget(self.comparison)
         self.logs = QTextBrowser()
-        tabs.addTab(self.detail, '运行指标与参数')
+        tabs.addTab(self.detail, '运行指标与日志')
         tabs.addTab(self.logs, '实验日志与信息')
         tabs.setMinimumWidth(360)
         right = QWidget()
@@ -82,7 +96,11 @@ class HistoryWindow(QMainWindow):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([280, 760, 440])
         self.setCentralWidget(splitter)
-        self.scan_directory(EXPERIMENT_DIR)
+        self.refresh_library()
+        self.library_timer = QTimer(self)
+        self.library_timer.setInterval(2000)
+        self.library_timer.timeout.connect(self.refresh_library)
+        self.library_timer.start()
 
     def _add_path(self, path):
         path = str(Path(path).resolve())
@@ -104,57 +122,85 @@ class HistoryWindow(QMainWindow):
         self.comparison_window.activateWindow()
 
     def scan_directory(self, directory):
-        for path in sorted(Path(directory).iterdir(), reverse=True):
-            if path.suffix.lower() in ('.cppx', '.zip'):
-                self._add_path(path)
-            elif path.suffix.lower() == '.json':
-                try:
+        directory = Path(directory)
+        errors = []
+        known = {self.library.item(i).data(Qt.UserRole) for i in range(self.library.count())}
+        try:
+            paths = sorted(directory.iterdir(), reverse=True)
+        except OSError as exc:
+            paths = []
+            errors.append(f'{directory}：{exc}')
+        for path in paths:
+            if path.name.startswith('.'):
+                continue
+            if str(path.resolve()) in known:
+                continue
+            try:
+                if path.is_dir() and (path / 'experiment.json').is_file():
+                    candidate = json.loads((path / 'experiment.json').read_text(encoding='utf-8'))
+                    if isinstance(candidate, dict) and candidate.get('schema') == 'cpp-arena-experiment':
+                        self._add_path(path)
+                elif path.suffix.lower() in ('.cppx', '.zip'):
+                    self._add_path(path)
+                elif path.suffix.lower() == '.json':
                     candidate = json.loads(path.read_text(encoding='utf-8'))
                     if isinstance(candidate, dict) and candidate.get('schema') == 'cpp-arena-experiment':
                         self._add_path(path)
-                except (OSError, ValueError):
-                    pass
+            except (OSError, ValueError) as exc:
+                errors.append(f'{path.name}：{exc}')
+        if errors:
+            self.statusBar().setStyleSheet('color:#b91c1c;')
+            self.statusBar().showMessage(f'实验库有{len(errors)}条记录无法读取：' + errors[0])
+        elif self.library_scan_errors:
+            self.statusBar().setStyleSheet('')
+            self.statusBar().clearMessage()
+        self.library_scan_errors = errors
 
     def scan_dialog(self):
-        directory = QFileDialog.getExistingDirectory(self, '扫描历史实验文件夹')
+        directory = QFileDialog.getExistingDirectory(self, '选择包含 experiment.json 的实验文件夹', str(self.library_directory))
         if directory:
-            self.scan_directory(directory)
+            self.open_path(directory)
+
+    def refresh_library(self):
+        for i in range(self.library.count()-1, -1, -1):
+            if not Path(self.library.item(i).data(Qt.UserRole)).exists():
+                self.library.takeItem(i)
+        self.scan_directory(self.library_directory)
 
     def open_dialog(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, '打开历史实验', '',
+        paths, _ = QFileDialog.getOpenFileNames(self, '导入旧实验包到默认实验库', str(self.library_directory),
             'CPP Arena 实验 (*.cppx *.zip *.json)')
         for path in paths:
-            self._add_path(path)
-        if paths:
-            self.open_path(paths[-1])
+            self.open_path(path)
 
     def _open_item(self, item):
         self.open_path(item.data(Qt.UserRole))
 
     def open_path(self, path):
         try:
-            if Path(path).suffix.lower() in ('.zip', '.cppx'):
-                record = load_bundle(path, self._assets.name)
-            else:
-                record = json.loads(Path(path).read_text(encoding='utf-8'))
-                if not isinstance(record, dict) or record.get('schema') != 'cpp-arena-experiment' or record.get('schema_version') != 1:
-                    raise ValueError('此文件缺少 v2.1 的原始几何及相机快照，无法完整回放。')
+            stored = import_experiment(path, self.library_directory)
+            record = load_experiment_directory(stored)
+            self.library.setCurrentItem(self._add_path(stored))
             self.set_record(record)
-            self.statusBar().showMessage('离线回放：' + str(path))
+            self.statusBar().showMessage('已保存到默认实验库，离线回放：' + str(stored))
+            return stored
         except Exception as exc:
             QMessageBox.warning(self, '历史实验打开失败', str(exc))
 
     def set_record(self, record):
         self._record = record
-        self.detail.log.setPlainText(record.get('logs', ''))
+        self.detail.log.clear()
+        for line in record.get('logs', '').splitlines():
+            color = '#b91c1c' if re.search(r'失败|报错|错误|Error|Exception', line, re.I) else '#22354b'
+            self.detail.log.appendHtml(f'<span style="color:{color}">{escape(line)}</span>')
         self._datasets = [Dataset.from_dict(d) for d in record['datasets']]
         self.comparison.set_data(record['results'], self._datasets, record['camera'],
-            next(iter(next(iter(record['results'].values()), {})), None),
-            project_name=record.get('project', '历史实验'))
+            record.get('comparison', {}).get('baseline', next(iter(next(iter(record['results'].values()), {})), None)),
+            project_name=record.get('experiment_name') or record.get('project', '历史实验'))
         self.logs.setPlainText(json.dumps({k: v for k, v in record.items()
             if k not in ('results', 'datasets', 'logs')}, ensure_ascii=False, indent=2)
             + '\n\n' + record.get('logs', ''))
-        self.info.setText(f"{record.get('project', '')}\n{record.get('saved_at', '')}\n状态：{record.get('status', '')}")
+        self.info.setText(f"{record.get('experiment_name') or record.get('project', '')}\n{record.get('saved_at', '')}\n状态：{record.get('status', '')}")
         self.ds_combo.blockSignals(True)
         self.ds_combo.clear()
         for ds in self._datasets:
@@ -228,6 +274,7 @@ class HistoryWindow(QMainWindow):
                 self.detail.clear()
 
     def closeEvent(self, event):
+        self.library_timer.stop()
         self.comparison_window.close()
         self._assets.cleanup()
         super().closeEvent(event)

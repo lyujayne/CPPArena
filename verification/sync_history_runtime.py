@@ -7,14 +7,15 @@ packaged = source / 'HistoryViewer'
 standalone = source.parent / 'HistoryViewer'
 # The repository carries a complete portable viewer. The user's existing
 # sibling deployment remains independent and is synchronized when present.
-seed = standalone if (standalone / 'viewer.py').is_file() else packaged
+seed = packaged if (packaged / 'viewer.py').is_file() else standalone
 if not (seed / 'viewer.py').is_file():
     raise FileNotFoundError('The standalone HistoryViewer source is missing')
 for name in ('viewer.py', 'start.bat', 'requirements.txt', 'README.md', 'runtime/gui/history_window.py'):
-    destination = packaged / name
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if (seed / name).resolve() != destination.resolve():
-        shutil.copy2(seed / name, destination)
+    for deployment in [packaged] + ([standalone] if (standalone / 'viewer.py').is_file() else []):
+        destination = deployment / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if (seed / name).resolve() != destination.resolve():
+            shutil.copy2(seed / name, destination)
 files = ['gui/__init__.py', 'gui/theme.py', 'gui/path_canvas.py', 'gui/result_panel.py', 'gui/compare_panel.py',
          'gui/export_toolbar.py', 'gui/route_export_dialog.py', 'core/image_export.py',
          'compare/route_metrics.py', 'compare/coverage_metrics.py',

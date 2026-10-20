@@ -51,4 +51,8 @@ def main():
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == '--export-worker':
+        from core.export_process import main as export_main
+        raise SystemExit(export_main(sys.argv[2:]))
+    else:
+        main()

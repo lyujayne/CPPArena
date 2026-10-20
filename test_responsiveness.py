@@ -60,7 +60,7 @@ def test_failed_algorithm_does_not_break_result_charts(monkeypatch):
     assert table.loc['总距离均值 (m)', 'ACO-GTSP'] == 100
     panel = ComparePanel()
     panel.set_data({'responsiveness': raw}, [dataset()], {}, None)
-    assert '21个子区' in panel.failure_label.text()
+    assert '21个子区' in panel.failure_label.toPlainText()
     assert list(panel._active_runs()) == ['ACO-GTSP']
     detail = ResultPanel()
     detail.show_run(failed)

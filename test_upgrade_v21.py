@@ -42,7 +42,9 @@ def metric_dataset():
 @pytest.fixture(scope='module')
 def experiment():
     ds = metric_dataset()
-    combos = enumerate_combinations(DECOMPOSITIONS, PLANNERS)
+    # Keep this historical v2.1 acceptance fixture at its original nine pairs.
+    # Later built-ins have their own full catalog integration checks.
+    combos = enumerate_combinations(('Bayazit', 'PSO-DCAS', 'Enhanced-ECD'), ('ACO', 'FA3ACO', 'Li-DP'))
     for combo in combos:
         if combo.decomposition == 'PSO-DCAS':
             combo.decomposition_params.update(pso_swarm_size=10, pso_iterations=4)
@@ -157,7 +159,7 @@ def test_export_is_portable_and_replay_never_runs_algorithms(experiment, tmp_pat
     monkeypatch.setattr('algorithms.aco.polygon_decomp.convex_decompose', must_not_solve)
     app = QApplication.instance() or QApplication([])
     apply_theme(app)
-    window = HistoryWindow()
+    window = HistoryWindow(library_dir=tmp_path / 'history-library')
     window.set_record(restored)
     assert window.run_combo.count() == 10
     assert not window.image_check.isChecked()
@@ -261,7 +263,9 @@ def test_gui_runs_final_list_and_saves_full_snapshot(tmp_path, monkeypatch):
     panel.table.selectRow(1)
     panel.remove_selected()
     window.run_experiment()
-    assert not panel.configuration.isEnabled()
+    assert panel.configuration.isEnabled()
+    assert panel.table.isEnabled()
+    assert not panel.seeds_edit.isEnabled()
     deadline = time.monotonic()+12
     while window._thread is not None and time.monotonic() < deadline:
         app.processEvents()

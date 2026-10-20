@@ -6,7 +6,7 @@ import os
 import sys
 
 APP_NAME = "CPP Arena"
-APP_VERSION = "2.1"
+APP_VERSION = "2.4"
 
 # 项目根目录（cpp_arena/）
 # 打包为 exe（PyInstaller 冻结）后：只读资源在 sys._MEIPASS（临时解压目录），
@@ -19,12 +19,47 @@ def _base_dir() -> str:
 
 BASE_DIR = _base_dir()
 RESOURCE_DIR = getattr(sys, "_MEIPASS", BASE_DIR)
+
+
+def resolve_versioned_path(path):
+    """Rebase existing local assets/projects after the source folder is renamed."""
+    if not path or os.path.exists(path):
+        return path
+    import re
+    from pathlib import Path
+    base = Path(BASE_DIR).resolve()
+    source = Path(path)
+    for parent in source.parents:
+        if (re.fullmatch(r'CPP _Arena_v\d+(?:\.\d+)*', parent.name)
+                and parent.parent.resolve() == base.parent):
+            candidate = (base / source.relative_to(parent)).resolve()
+            if base in candidate.parents and candidate.exists():
+                return str(candidate)
+    return path
+
+
 EXPERIMENT_DIR = os.path.join(BASE_DIR, "experiments")
 PLUGIN_DIR = os.path.join(BASE_DIR, "algorithms", "plugins")
 PROJECT_DIR = os.path.join(BASE_DIR, "projects")
 PICTURE_DIR = os.path.join(BASE_DIR, 'pictures')
 DATASET_LIBRARY_DIR = os.path.join(BASE_DIR, 'dataset_library')
 COMPONENT_DIR = os.path.join(BASE_DIR, 'components')
+
+
+def _history_viewer_dir():
+    if os.path.isfile(os.path.join(BASE_DIR, 'viewer.py')):
+        # A repository copy shares the user's existing sibling deployment.
+        if os.path.isfile(os.path.join(os.path.dirname(BASE_DIR), 'main.py')):
+            sibling = os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), 'HistoryViewer')
+            if os.path.isfile(os.path.join(sibling, 'viewer.py')):
+                return sibling
+        return BASE_DIR  # A copied standalone viewer keeps its own library.
+    sibling = os.path.join(os.path.dirname(BASE_DIR), 'HistoryViewer')
+    return sibling if os.path.isfile(os.path.join(sibling, 'viewer.py')) else os.path.join(BASE_DIR, 'HistoryViewer')
+
+
+HISTORY_VIEWER_DIR = _history_viewer_dir()
+HISTORY_EXPERIMENT_DIR = os.path.join(HISTORY_VIEWER_DIR, 'experiments')
 
 for _d in (EXPERIMENT_DIR, PROJECT_DIR, PICTURE_DIR):
     os.makedirs(_d, exist_ok=True)

@@ -119,7 +119,8 @@ class Dataset:
             r = Region.from_dict(rd)
             ds.regions.append(r)
             ds._next_region_id = max(ds._next_region_id, r.id + 1)
-        ds.bg_image_path = d.get("bg_image_path")
+        from config.default_params import resolve_versioned_path
+        ds.bg_image_path = resolve_versioned_path(d.get("bg_image_path"))
         ds.bg_corners_lonlat = d.get("bg_corners_lonlat")
         ds.bg_bounds_utm = tuple(d["bg_bounds_utm"]) if d.get("bg_bounds_utm") else None
         return ds
@@ -139,9 +140,10 @@ class Project:
         self.combinations: list = []
 
     def to_dict(self) -> dict:
+        from config.default_params import APP_VERSION
         return {
             "name": self.name,
-            "version": "2.1",
+            "version": APP_VERSION,
             "combinations": self.combinations,
             "camera": self.camera.as_dict(),
             "datasets": [ds.to_dict() for ds in self.datasets],

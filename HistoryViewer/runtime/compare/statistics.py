@@ -33,7 +33,8 @@ def build_comparison_table(runs_by_algo: Dict[str, List[dict]],
     行 = 指标（距离/转弯/耗时 的均值/标准差/最优/最差 + 相对基线改善率），
     列 = 算法。
     """
-    rows = {}
+    raw_runs = runs_by_algo
+    rows = {'运行状态': {}, '失败运行次数': {}}
     runs_by_algo = {name: [run for run in runs if successful_run(run)]
                     for name, runs in runs_by_algo.items()}
     metric_labels = {
@@ -48,7 +49,7 @@ def build_comparison_table(runs_by_algo: Dict[str, List[dict]],
 
     for label in metric_labels.values():
         rows[label] = {}
-    for label in ('有效运行次数', '扫描足迹覆盖率均值 (%)', '扫描足迹覆盖率最低 (%)', '未覆盖面积均值 (m²)',
+    for label in ('有效运行次数', '覆盖率均值 (%)', '覆盖率最低 (%)', '未覆盖面积均值 (m²)',
                   '子区域转运距离均值 (m)', '区域外航程均值 (m)', '冗余率均值 (%)',
                   '扫描换行次数均值', '非扫描航程均值 (m)'):
         rows[label] = {}
@@ -58,6 +59,11 @@ def build_comparison_table(runs_by_algo: Dict[str, List[dict]],
     rows[imp_label] = {}
 
     for algo, runs in runs_by_algo.items():
+        failed = len(raw_runs[algo])-len(runs)
+        rows['运行状态'][algo] = ('部分失败' if runs and failed else '成功' if runs else
+                                 '运行失败' if failed else '无运行结果')
+        rows['失败运行次数'][algo] = failed
+        rows['有效运行次数'][algo] = len(runs)
         if not runs:
             continue
         dists = [r.get("total_distance") for r in runs]
@@ -68,10 +74,10 @@ def build_comparison_table(runs_by_algo: Dict[str, List[dict]],
         ratios = [c['covered_ratio'] for c in coverage if c.get('covered_ratio') is not None]
         missed = [c['uncovered_area_m2'] for c in coverage if c.get('uncovered_area_m2') is not None]
         if ratios:
-            rows['扫描足迹覆盖率均值 (%)'][algo] = round(stats_of(ratios)['mean']*100, 4)
-            rows['扫描足迹覆盖率最低 (%)'][algo] = round(float(min(ratios))*100, 4)
+            rows['覆盖率均值 (%)'][algo] = stats_of(ratios)['mean']*100
+            rows['覆盖率最低 (%)'][algo] = float(min(ratios))*100
         if missed:
-            rows['未覆盖面积均值 (m²)'][algo] = round(stats_of(missed)['mean'], 4)
+            rows['未覆盖面积均值 (m²)'][algo] = stats_of(missed)['mean']
         from compare.route_metrics import compute_route_metrics
         route_metrics = [(r.get('metadata') or {}).get('route_metrics') or compute_route_metrics(r) for r in runs]
         for key, label in (('subregion_transfer_m', '子区域转运距离均值 (m)'),
@@ -99,7 +105,7 @@ def build_comparison_table(runs_by_algo: Dict[str, List[dict]],
                 rows[imp_label][algo] = round((base_mean - m) / base_mean * 100.0, 2)
             rows[imp_label][baseline] = 0.0
 
-    df = pd.DataFrame.from_dict(rows, orient="index")
+    df = pd.DataFrame.from_dict(rows, orient="index").reindex(index=list(rows), columns=list(raw_runs))
     return df
 
 

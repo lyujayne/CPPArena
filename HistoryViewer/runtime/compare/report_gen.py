@@ -30,8 +30,10 @@ def latex_booktabs(df: pd.DataFrame, caption: str = "算法对比实验结果",
             v = row[c]
             if isinstance(v, (int, float)) and not pd.isna(v):
                 vals.append(f"{v:g}")
-            else:
+            elif pd.isna(v):
                 vals.append("--")
+            else:
+                vals.append(str(v))
         lines.append(f"        {idx} & " + " & ".join(vals) + " \\\\")
     lines += [
         "        \\bottomrule",
@@ -46,8 +48,8 @@ def export_csv(df: pd.DataFrame, path: str):
 
 
 def export_json(data, path: str):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    from core.experiment_bundle import dump_json
+    dump_json(path, data)
 
 
 def algorithm_description(meta: dict, params: dict) -> str:
@@ -125,9 +127,20 @@ def generate_report(project_name: str, camera: dict, runs_by_algo: Dict[str, Lis
             md.append(f"- seed={r.get('seed', '--')}: 距离 {r.get('total_distance', 0):.2f} m, "
                       f"航向拐点 {r.get('total_turns', '--')}, 耗时 {r.get('runtime', 0):.3f} s")
             metadata = r.get('metadata') or {}
+            for kind, description in (metadata.get('component_implementation_scope') or {}).items():
+                md.append(f"  - {'分割' if kind == 'decomposition' else '规划'}实现范围：{description}")
+            for item in metadata.get('decomposition', []):
+                if item.get('state_budget_hit'):
+                    md.append('  - 最少块搜索已达到状态预算，当前分割为有效解，未证明全局最少块。')
+                if 'optimal_within_candidates' in item:
+                    md.append(f"  - 整数规划在候选集内已证明最优：{item['optimal_within_candidates']}；候选集受限：{item['candidate_family_limited']}。")
             if metadata.get('coverage'):
-                md.append(f"  - 扫描足迹覆盖率：{metadata['coverage'].get('covered_ratio', '--')}；"
-                          f"未覆盖面积：{metadata['coverage'].get('uncovered_area_m2', '--')} m²")
+                from compare.coverage_metrics import format_coverage, format_area
+                coverage = metadata['coverage']
+                md.append(f"  - 覆盖率：{format_coverage(coverage)}；"
+                          f"已扫描目标面积：{format_area(coverage.get('covered_area_m2'))} / "
+                          f"总任务面积：{format_area(coverage.get('target_area_m2'))} m²；"
+                          f"未覆盖面积：{format_area(coverage.get('uncovered_area_m2'))} m²")
             if metadata.get('gtsp', {}).get('paper_extension'):
                 md.append('  - ' + metadata['gtsp']['paper_extension'])
         md.append("")

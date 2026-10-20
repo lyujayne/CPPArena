@@ -6,6 +6,7 @@ shapely>=2.0
 pyproj>=3.0
 # 数值与表格
 numpy>=1.24
+scipy>=1.11
 pandas>=1.5
 # 可视化（支持 PNG 300dpi / SVG / PDF 矢量导出）
 matplotlib>=3.7
