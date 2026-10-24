@@ -39,13 +39,43 @@ def export_route_images(directory, dataset, runs, overlay=False):
     return outputs
 
 
+def export_convergence_images(directory, runs_by_algo, overlay=False):
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from compare.convergence import draw_convergence
+    from core.image_export import save_jpeg
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    outputs = []
+    batches = [runs_by_algo] if overlay else [{label: runs} for label, runs in runs_by_algo.items()]
+    for batch in batches:
+        name = '收敛曲线_' + route_filename({label: runs[0] for label, runs in batch.items()})
+        path = directory / name
+        number = 2
+        while path.exists():
+            path = directory / (Path(name).stem + f' ({number}).jpg')
+            number += 1
+        figure = Figure(figsize=(10, max(6, 3 * len({
+            (run.get('metadata') or {}).get('gtsp', {}).get('objective', 'mission_total_distance')
+            for runs in batch.values() for run in runs}))))
+        FigureCanvasAgg(figure)
+        try:
+            draw_convergence(figure, batch)
+            save_jpeg(figure, path)
+        finally:
+            figure.clear()
+        outputs.append(path)
+    return outputs
+
+
 class RouteExportDialog(QDialog):
-    def __init__(self, labels, selected=None, parent=None):
+    def __init__(self, labels, selected=None, parent=None, convergence=False):
         super().__init__(parent)
-        self.setWindowTitle('勾选组合 · 导出高清 JPEG 路线图')
+        self.setWindowTitle('勾选组合 · 导出高清 JPEG ' + ('收敛曲线' if convergence else '路线图'))
         self.resize(720, 520)
         layout = QVBoxLayout(self)
-        hint = QLabel('每个组合使用航程最短的有效种子。分别导出生成单组合图片；叠加导出把勾选组合绘在一张图中。')
+        hint = QLabel('每个组合汇总全部有效种子的曲线，显示均值与标准差带；不同优化目标分图，DP显示结果点。'
+                      if convergence else '每个组合使用航程最短的有效种子。分别导出生成单组合图片；叠加导出把勾选组合绘在一张图中。')
         hint.setWordWrap(True)
         layout.addWidget(hint)
         self.listing = QListWidget()

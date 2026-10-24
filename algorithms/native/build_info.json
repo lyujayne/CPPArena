@@ -1,0 +1,9 @@
+{
+  "cgal": "6.0.1",
+  "boost": "1.86.0",
+  "compiler": "MinGW-w64 GCC 13.1.0 x64",
+  "kernel": "Exact_predicates_inexact_constructions_kernel",
+  "arithmetic": "Boost.Multiprecision; GMP/MPFR/CORE disabled",
+  "partition.cpp_sha256": "0c3703e9246bbf16a3e634912502466fafde988902600f5360e30a7a6352a7b5",
+  "arena_partition.dll_sha256": "44e0f6841b9acb28ad6a69b3661669cc65341f86698a18045fbe838a4aa5f495"
+}

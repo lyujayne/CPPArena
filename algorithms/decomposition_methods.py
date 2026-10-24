@@ -3,14 +3,15 @@
 All geometry is translated/scaled before construction to protect UTM coordinates.
 No convex hull may replace the task boundary, and no positive-area cell is dropped.
 """
+import heapq
 import math
 from functools import lru_cache
 
 import numpy as np
-from shapely import affinity, set_precision
-from shapely.geometry import Polygon, LineString, Point, box
+from shapely import affinity, union_all
+from shapely.geometry import Polygon, LineString, Point
 from shapely.geometry.polygon import orient
-from shapely.ops import split, unary_union
+from shapely.ops import polygonize, unary_union
 
 from core.execution_control import checkpoint
 
@@ -65,126 +66,115 @@ def _finish(parts, original, transform, info):
             or union.symmetric_difference(original).area > tol
             or sum(p.area for p in restored)-union.area > tol):
         raise RuntimeError('新增分割算法未满足凸性、原区域完整覆盖及无重叠约束')
-    return [_ring(p) for p in restored], dict(info, n_cells=len(parts))
+    return [_ring(p) for p in restored], dict(info, n_cells=len(parts),
+        width_sum_m=sum(_width(p) for p in parts)*scale,
+        geometry_policy='convex partition; exact ROI; no exterior coverage',
+        implementation_version='2.9')
 
 
 def _td(poly, angle):
     rotated = affinity.rotate(poly, -angle, origin=(0, 0))
-    xs = sorted(set(x for x, _ in rotated.exterior.coords[:-1]))
-    _, ymin, _, ymax = rotated.bounds
-    cells = []
-    for a, b in zip(xs, xs[1:]):
-        checkpoint('TD 梯形扫描分解')
-        cells.extend(_polygons(rotated.intersection(box(a, ymin-1, b, ymax+1))))
+    cuts = []
+    for vertex in _ring(rotated):
+        checkpoint('TD 顶点局部射线分解')
+        for direction in ((0., -1.), (0., 1.)):
+            end = _ray_end(rotated, vertex, direction)
+            if end is not None:
+                cuts.append(LineString([vertex, end]))
+    cells = _cut_cells(rotated, cuts)
     return [affinity.rotate(p, angle, origin=(0, 0)) for p in cells]
 
 
-def _triangulate(poly):
-    """Ear clipping, using only the polygon's vertices (unconstrained Delaunay is unsuitable)."""
-    pts = _ring(_clean(poly))
-    triangles = []
-    while len(pts) > 3:
-        checkpoint('HM 耳切三角剖分')
-        for i, b in enumerate(pts):
-            a, c = pts[i-1], pts[(i+1) % len(pts)]
-            cross = (b[0]-a[0])*(c[1]-b[1])-(b[1]-a[1])*(c[0]-b[0])
-            if cross <= 1e-14:
-                continue
-            triangle = Polygon([a, b, c])
-            others = [p for j, p in enumerate(pts) if j not in {i, (i-1) % len(pts), (i+1) % len(pts)}]
-            if any(triangle.covers(Point(p)) for p in others) or not poly.covers(triangle):
-                continue
-            triangles.append(triangle)
-            pts.pop(i)
-            break
+def _ray_end(poly, vertex, direction):
+    """First boundary hit of an inward ray; never cut a separate distant branch."""
+    x, y = vertex
+    dx, dy = direction
+    length = math.hypot(dx, dy)
+    dx, dy = dx/length, dy/length
+    ray = LineString([vertex, (x+4*dx, y+4*dy)])
+    hits = poly.boundary.intersection(ray)
+    points = []
+    pending = [hits]
+    while pending:
+        item = pending.pop()
+        if item.is_empty:
+            continue
+        if item.geom_type == 'Point':
+            points.append(item.coords[0])
+        elif item.geom_type == 'LineString':
+            points.extend((item.coords[0], item.coords[-1]))
         else:
-            raise RuntimeError('耳切剖分失败，请检查极短边或接近重合的顶点')
-    triangles.append(Polygon(pts))
-    return triangles
+            pending.extend(item.geoms)
+    distances = [((a-x)*dx+(b-y)*dy, (a, b)) for a, b in points]
+    distances = [v for v in distances if v[0] > 1e-12]
+    if not distances:
+        return None
+    distance, end = min(distances)
+    if not poly.contains(Point(x+dx*distance/2, y+dy*distance/2)):
+        return None  # outward or coincident with a boundary edge
+    return end
 
 
-def _hm(poly):
-    parts = _triangulate(poly)
-    while True:
-        checkpoint('HM 删除非必要内部对角线')
-        choices = []
-        for i, a in enumerate(parts):
-            for j in range(i+1, len(parts)):
-                b = parts[j]
-                common = a.boundary.intersection(b.boundary).length
-                if common <= 1e-12:
-                    continue
-                merged = a.union(b)
-                if _convex(merged):
-                    choices.append((-common, i, j, _clean(merged)))
-        if not choices:
-            return parts
-        _, i, j, merged = min(choices, key=lambda v: v[:3])
-        parts[i] = merged
-        parts.pop(j)
+def _cut_cells(poly, cuts):
+    # Snap-round the complete arrangement together so boundary hits and crossing
+    # rays share nodes even when GEOS constructions differ at machine precision.
+    network = union_all([poly.boundary, *cuts], grid_size=1e-12)
+    return [_clean(p) for p in polygonize(network)
+            if poly.covers(p.representative_point())]
+
+
+def _reflex(poly):
+    pts = _ring(poly)
+    for i, b in enumerate(pts):
+        a, c = pts[i-1], pts[(i+1) % len(pts)]
+        if (b[0]-a[0])*(c[1]-b[1])-(b[1]-a[1])*(c[0]-b[0]) < -1e-13:
+            yield i, a, b, c
 
 
 def _iee_cells(poly):
-    """Extend the supporting lines of the two incident edges at each reflex vertex.
-
-    This is an arrangement variant of IEE, not a claimed reproduction of one paper.
-    Extending through the whole polygon can create extra candidate cells.
-    """
-    pts = _ring(poly)
-    cells = [poly]
-    for i, b in enumerate(pts):
-        a, c = pts[i-1], pts[(i+1) % len(pts)]
-        if (b[0]-a[0])*(c[1]-b[1])-(b[1]-a[1])*(c[0]-b[0]) >= -1e-13:
-            continue
+    """Nielsen 2019 §3.1: inward incident-edge rays stop at the first boundary."""
+    cuts = []
+    for _, a, b, c in _reflex(poly):
         for other in (a, c):
             checkpoint('IEE 凹顶点邻边延伸')
-            dx, dy = b[0]-other[0], b[1]-other[1]
-            length = math.hypot(dx, dy)
-            dx, dy = dx/length*4, dy/length*4
-            cutter = LineString([(b[0]-dx, b[1]-dy), (b[0]+dx, b[1]+dy)])
-            # Repeated supporting lines otherwise manufacture roundoff slivers
-            # that collapse after translation back to UTM. Snap at 1e-12 of
-            # the task extent; final area/overlap checks still use the original.
-            cells = [part for cell in cells
-                     for part in _polygons(set_precision(split(cell, cutter), 1e-12))]
-    # All reflex incident supporting lines should resolve reflex angles. Refuse
-    # unexpected non-convex output rather than silently substitute Bayazit.
+            end = _ray_end(poly, b, (b[0]-other[0], b[1]-other[1]))
+            if end is not None:
+                cuts.append(LineString([b, end]))
+    cells = _cut_cells(poly, cuts)
     if any(not _convex(p) for p in cells):
         raise RuntimeError('IEE 延伸单元仍存在凹角，无法执行凸合并')
     return cells
 
 
 def _merge_candidates(cells, max_size, max_candidates):
-    """Connected convex unions; every atomic cell remains an available candidate."""
+    """Nielsen 2019 Algorithm 1: balanced-size convex merge option pairs.
+
+    This is the paper's approximation, not enumeration of every convex union.
+    """
     n = len(cells)
-    adjacency = [{j for j in range(n) if i != j and cells[i].boundary.intersection(cells[j].boundary).length > 1e-12}
-                 for i in range(n)]
     candidates = {1 << i: p for i, p in enumerate(cells)}
-    layer = list(candidates)
-    truncated = False
-    for size in range(2, min(max_size, n)+1):
-        new = []
+    levels = {1: list(candidates)}
+    maximum = n if max_size == 0 else min(max_size, n)
+    for size in range(2, maximum+1):
+        levels[size] = []
         seen = set()
-        for mask in layer:
-            checkpoint('生成整数规划凸合并候选')
-            neighbors = set().union(*(adjacency[i] for i in range(n) if mask >> i & 1))
-            for j in sorted(neighbors):
-                key = mask | (1 << j)
-                if key == mask or key in candidates or key in seen:
+        left, right = size//2, (size+1)//2
+        for a in levels.get(left, []):
+            for b in levels.get(right, []):
+                checkpoint('IEE 论文平衡组合候选')
+                if a & b:
+                    continue
+                key = a | b
+                if key in seen:
                     continue
                 seen.add(key)
-                merged = candidates[mask].union(cells[j])
+                merged = union_all([candidates[a], candidates[b]], grid_size=1e-12)
                 if _convex(merged):
                     if len(candidates) >= max_candidates:
                         return candidates, True
                     candidates[key] = _clean(merged)
-                    new.append(key)
-        layer = new
-        if not layer:
-            break
-    if max_size < n:
-        truncated = True  # size-limited candidate family, not global optimality
-    return candidates, truncated
+                    levels[size].append(key)
+    return candidates, maximum < n
 
 
 def _milp_merge(cells, params):
@@ -193,8 +183,8 @@ def _milp_merge(cells, params):
     max_size = int(params['iee_max_merge_cells'])
     limit = int(params['iee_max_candidates'])
     seconds = float(params['iee_time_limit_s'])
-    if max_size < 1 or limit < len(cells) or seconds <= 0:
-        raise ValueError('IEE 候选上限至少为原始单元数，合并规模和时间须为正')
+    if max_size < 0 or limit < len(cells) or seconds <= 0:
+        raise ValueError('IEE 合并规模须非负（0不限制），候选上限至少为基本单元数，时间须为正')
     candidates, limited = _merge_candidates(cells, max_size, limit)
     keys = list(candidates)
     matrix = lil_matrix((len(cells), len(keys)), dtype=float)
@@ -202,8 +192,9 @@ def _milp_merge(cells, params):
         for i in range(len(cells)):
             if mask >> i & 1:
                 matrix[i, j] = 1
-    checkpoint('整数规划选择凸块（可用终止按钮结束工作进程）', force=True)
-    result = milp(np.ones(len(keys)), integrality=np.ones(len(keys)), bounds=Bounds(0, 1),
+    widths = np.array([_width(candidates[k]) for k in keys])
+    checkpoint('IEE 整数规划最小宽度和（可终止工作进程）', force=True)
+    result = milp(widths, integrality=np.ones(len(keys)), bounds=Bounds(0, 1),
                   constraints=LinearConstraint(matrix.tocsc(), 1, 1),
                   options={'time_limit': seconds, 'mip_rel_gap': 0.})
     checkpoint()
@@ -215,61 +206,16 @@ def _milp_merge(cells, params):
     return [candidates[keys[j]] for j in chosen], {
         'atomic_cells': len(cells), 'candidate_count': len(keys), 'candidate_family_limited': limited,
         'optimal_within_candidates': result.status == 0, 'milp_status': int(result.status),
-        'milp_message': result.message, 'objective': 'min_convex_cell_count_in_candidate_family'}
+        'milp_message': result.message, 'milp_gap': float(result.mip_gap),
+        'candidate_generation': 'Nielsen 2019 Algorithm 1 balanced approximation',
+        'objective': 'sum_minimum_width', 'objective_value_normalized': float(result.fun),
+        'global_optimality_claimed': False}
 
 
-def _greene(poly, budget):
-    """Minimum-count recurrence over valid vertex diagonals; bounded state search.
-
-    Same no-Steiner objective as Greene, but not his polynomial recurrence.
-    A state-budget hit returns a valid HM incumbent and is explicitly recorded.
-    """
-    if budget < 1:
-        raise ValueError('Greene 搜索状态预算须为正')
-    used, hit = 0, False
-
-    def key(p):
-        pts = _ring(_clean(p))
-        start = min(range(len(pts)), key=lambda i: pts[i])
-        return tuple(pts[start:] + pts[:start])
-
-    @lru_cache(None)
-    def search(ring):
-        nonlocal used, hit
-        checkpoint('Greene 最少凸块递归搜索')
-        p = Polygon(ring)
-        if _convex(p):
-            return (p,)
-        incumbent = tuple(_hm(p))
-        if used >= budget:
-            hit = True
-            return incumbent
-        used += 1
-        n = len(ring)
-        for i in range(n):
-            for j in range(i+2, n):
-                if used >= budget:
-                    hit = True
-                    return incumbent
-                if i == 0 and j == n-1:
-                    continue
-                line = LineString([ring[i], ring[j]])
-                if not p.covers(line) or not p.contains(line.interpolate(.5, normalized=True)):
-                    continue
-                a = Polygon(ring[i:j+1])
-                b = Polygon(ring[j:] + ring[:i+1])
-                if a.area <= 1e-14 or b.area <= 1e-14 or not a.is_valid or not b.is_valid:
-                    continue
-                candidate = search(key(a)) + search(key(b))
-                if len(candidate) < len(incumbent):
-                    incumbent = candidate
-                if len(incumbent) == 2:
-                    return incumbent  # a non-convex polygon needs at least two
-        return incumbent
-
-    parts = list(search(key(poly)))
-    return parts, {'states': used, 'state_budget_hit': hit, 'minimum_count_proven': not hit,
-                   'objective': 'minimum_convex_cell_count_without_Steiner_vertices'}
+def _state_key(poly):
+    pts = [tuple(round(c, 12) for c in xy) for xy in _ring(_clean(poly))]
+    start = min(range(len(pts)), key=lambda i: pts[i])
+    return tuple(pts[start:] + pts[:start])
 
 
 def _width(poly):
@@ -280,57 +226,157 @@ def _width(poly):
     return float(np.min(np.ptp(pts @ normals.T, axis=0)))
 
 
-def _rgs(poly, rotations):
+def _angles(start, rotations):
     if not 1 <= rotations <= 180:
-        raise ValueError('RGS 尝试方向数须在1～180之间')
+        raise ValueError('尝试方向数须在1～180之间')
+    if not math.isfinite(start):
+        raise ValueError('初始旋转角度须为有限数')
+    return (start + np.arange(rotations)*180/rotations) % 180
 
-    def recurse(p):
-        checkpoint('RGS 凹顶点递归贪心切分')
+
+def _better(cost, count, old_cost, old_count):
+    return cost < old_cost-1e-12 or (abs(cost-old_cost) <= 1e-12 and count < old_count)
+
+
+def _rgs(poly, rotations, max_states=50000):
+    """Coombes 2020 Algorithm 1/2 search, using an exact ROI and width surrogate.
+
+    Every reflex cut is evaluated AFTER recursively resolving its children.
+    The paper's optional exterior hull coverage is excluded by the ROI policy.
+    """
+    if max_states < 1:
+        raise ValueError('RGS 状态上限须为正')
+    states = 0
+
+    @lru_cache(None)
+    def recurse(ring):
+        nonlocal states
+        checkpoint('RGS 比较各凹点递归后的宽度代价')
+        states += 1
+        if states > max_states:
+            raise RuntimeError('RGS 达到状态上限，未完成本次搜索；请提高 rgs_max_states 或减少方向数')
+        p = Polygon(ring)
         if _convex(p):
-            return [p]
-        pts = _ring(p)
-        choices = []
-        for i, b in enumerate(pts):
-            a, c = pts[i-1], pts[(i+1) % len(pts)]
-            if (b[0]-a[0])*(c[1]-b[1])-(b[1]-a[1])*(c[0]-b[0]) >= -1e-13:
+            return (p,), _width(p)
+        best, score_best = None, math.inf
+        for _, _, vertex, _ in _reflex(p):
+            cuts = []
+            for direction in ((0., -1.), (0., 1.)):
+                end = _ray_end(p, vertex, direction)
+                if end is not None:
+                    cuts.append(LineString([vertex, end]))
+            children = _cut_cells(p, cuts)
+            if len(children) < 2:
                 continue
-            parts = _polygons(split(p, LineString([(b[0], -4), (b[0], 4)])))
-            if len(parts) > 1:
-                # Hulls only score candidate cuts. They never replace output cells.
-                score = sum(_width(q.convex_hull) for q in parts)
-                choices.append((score, i, parts))
-        if not choices:
+            parts, score = [], 0.
+            for child in children:
+                result, value = recurse(_state_key(child))
+                parts.extend(result)
+                score += value
+            if best is None or _better(score, len(parts), score_best, len(best)):
+                best, score_best = tuple(parts), score
+        if best is None:
             raise RuntimeError('RGS 当前方向无有效凹顶点切分，请调整方向数')
-        return [part for q in min(choices, key=lambda v: v[:2])[2] for part in recurse(_clean(q))]
+        return best, score_best
 
     best, score_best, angle_best = None, math.inf, 0
-    for angle in np.linspace(0, 180, rotations, endpoint=False):
+    for angle in _angles(0., rotations):
         rotated = affinity.rotate(poly, -float(angle), origin=(0, 0))
-        parts = recurse(rotated)
-        score = sum(_width(p) for p in parts)
-        if score < score_best-1e-12:
+        parts, score = recurse(_state_key(rotated))
+        if best is None or _better(score, len(parts), score_best, len(best)):
             best, score_best, angle_best = parts, score, float(angle)
     return [affinity.rotate(p, angle_best, origin=(0, 0)) for p in best], {'rotation_deg': angle_best,
-        'objective': 'sum_minimum_width', 'implementation': 'reflex vertical splits; greedy hull-width score; exact boundary retained'}
+        'rotation_count': rotations, 'states': states, 'memo_hits': recurse.cache_info().hits,
+        'objective': 'sum_minimum_width', 'search_complete': True,
+        'hull_coverage_enabled': False, 'wind_model_enabled': False,
+        'implementation': 'Coombes 2020 recursive candidate comparison; minimum-width surrogate; exact ROI restriction',
+        'global_optimality_claimed': False}
 
 
-def _td_dp(cells):
-    """Interval DP over deterministic sweep order, permitting only convex unions."""
-    cells = sorted(cells, key=lambda p: (p.centroid.x, p.centroid.y))
+def _td_dp(cells, max_subsets=50000, max_states=100000):
+    """Convex connected-subset options and bottom-up set-partition DP.
+
+    Concave intermediate subsets are explored too: later neighbors can make the
+    union convex. This avoids the old restriction to contiguous centroid order.
+    """
     n = len(cells)
-    dp, previous, blocks = [0] + [math.inf]*n, {}, {}
-    for end in range(1, n+1):
-        merged = None
-        for start in range(end-1, -1, -1):
-            checkpoint('TD-DP 连续凸单元重组')
-            merged = cells[start] if merged is None else merged.union(cells[start])
-            if _convex(merged) and dp[start]+1 < dp[end]:
-                dp[end], previous[end], blocks[end] = dp[start]+1, start, _clean(merged)
-    result, end = [], n
-    while end:
-        result.append(blocks[end])
-        end = previous[end]
-    return list(reversed(result))
+    if max_subsets < n or max_states < 1:
+        raise ValueError('TD-DP 子集预算至少为基本单元数，DP状态预算须为正')
+    adjacency = [sum(1 << j for j in range(n) if i != j and
+                    cells[i].boundary.intersection(cells[j].boundary).length > 1e-12)
+                 for i in range(n)]
+    candidates = {1 << i: p for i, p in enumerate(cells)}
+    discovered = dict(candidates)
+    queue = list(discovered)
+    domain = union_all(cells, grid_size=1e-12)
+    limited = False
+    for mask in queue:
+        checkpoint('TD-DP 枚举邻接单元集合')
+        neighbors = 0
+        for i in range(n):
+            if mask >> i & 1:
+                neighbors |= adjacency[i]
+        neighbors &= ~mask
+        while neighbors:
+            bit = neighbors & -neighbors
+            neighbors ^= bit
+            key = mask | bit
+            if key in discovered:
+                continue
+            if len(discovered) >= max_subsets:
+                limited = True
+                break
+            merged = union_all([discovered[mask], cells[bit.bit_length()-1]], grid_size=1e-12)
+            discovered[key] = merged
+            if _convex(merged):
+                candidates[key] = _clean(merged)
+                queue.append(key)
+            elif merged.convex_hull.difference(domain).area <= 1e-13:
+                # A convex superset must contain this hull. If that hull exits
+                # the ROI, no addition of internal cells can make it feasible.
+                queue.append(key)
+        if limited:
+            break
+    # Every transition covers the lowest uncovered atom. This removes duplicate
+    # permutations of blocks; ordering by covered atom count is topological.
+    containing = [[] for _ in cells]
+    for mask, shape in candidates.items():
+        cost = _width(shape)
+        for i in range(n):
+            if mask >> i & 1:
+                containing[i].append((mask, cost))
+    full = (1 << n)-1
+    dp, previous, agenda = {0: (0., 0)}, {}, [(0, 0)]
+    while agenda:
+        _, covered = heapq.heappop(agenda)
+        checkpoint('TD-DP 集合状态动态规划')
+        if covered == full:
+            break
+        atom = ((full ^ covered) & -(full ^ covered)).bit_length()-1
+        cost, count = dp[covered]
+        for option, value in containing[atom]:
+            if covered & option:
+                continue
+            target = covered | option
+            old = dp.get(target, (math.inf, n+1))
+            if _better(cost+value, count+1, *old):
+                if target not in dp:
+                    if len(dp) >= max_states:
+                        raise RuntimeError('TD-DP 达到DP状态上限，未完成求解；请提高 tddp_max_states')
+                    heapq.heappush(agenda, (target.bit_count(), target))
+                dp[target] = cost+value, count+1
+                previous[target] = covered, option
+    parts, current = [], full
+    while current:
+        current, option = previous[current]
+        parts.append(candidates[option])
+    return list(reversed(parts)), {
+        'atomic_cells': n, 'connected_subsets_examined': len(discovered),
+        'candidate_count': len(candidates), 'candidate_family_limited': limited,
+        'dp_states': len(dp), 'optimal_within_candidates': True,
+        'optimal_for_fixed_td': not limited, 'objective': 'sum_minimum_width',
+        'external_cells_enabled': False, 'wind_model_enabled': False,
+        'global_optimality_claimed': False}
 
 
 class DecompositionMethod:
@@ -352,27 +398,38 @@ class DecompositionMethod:
 
 class TDDecomposition(DecompositionMethod):
     label = 'TD 梯形分解'
-    description = '按全部顶点的扫描横坐标切成梯形或三角形；角度可调，不执行合并。'
-    default_params = {'td_angle_deg': 0.}
-    param_labels = {'td_angle_deg': '梯形分解旋转角度 (°)'}
+    description = '从各顶点向上下首次边界发出局部射线，构造梯形单元；多方向按最小宽度和选优，不执行合并。'
+    default_params = {'td_angle_deg': 0., 'td_rotations': 6}
+    param_labels = {'td_angle_deg': '起始旋转角度 (°)', 'td_rotations': '尝试方向数（1为固定角度）'}
 
     def partition(self, poly, p):
-        return _td(poly, float(p['td_angle_deg'])), {'rotation_deg': float(p['td_angle_deg'])}
+        best, score_best, selected = None, math.inf, 0.
+        rotations = int(p['td_rotations'])
+        for angle in _angles(float(p['td_angle_deg']), rotations):
+            parts = _td(poly, float(angle))
+            score = sum(_width(q) for q in parts)
+            if best is None or _better(score, len(parts), score_best, len(best)):
+                best, score_best, selected = parts, score, float(angle)
+        return best, {'rotation_deg': selected, 'rotation_count': rotations,
+                      'objective': 'sum_minimum_width', 'construction': 'local first-hit vertex rays',
+                      'wind_model_enabled': False, 'global_optimality_claimed': False}
 
 
 class HMDecomposition(DecompositionMethod):
     label = 'Hertel–Mehlhorn 凸分解'
-    description = '耳切三角剖分后删除合并后仍凸的内部对角线，采用最长共享边优先的确定性顺序。'
+    description = '直接调用CGAL 6.0.1 approx_convex_partition_2：使用参考约束三角剖分、内部边遍历顺序和HM删边实现。'
 
     def partition(self, poly, p):
-        return _hm(poly), {'implementation': 'ear triangulation + removal of inessential diagonals'}
+        from algorithms.cgal_partition import convex_partition
+        parts, info = convex_partition(_ring(poly))
+        return parts, dict(info, objective='HM convex partition', minimum_count_proven=False)
 
 
 class IEEDecomposition(DecompositionMethod):
-    label = 'IEE + 整数规划合并（思路）'
-    description = '凹顶点邻边支撑线延伸形成基本凸单元，用0/1整数规划最少块合并；最优性仅限已生成的凸合并候选。'
-    default_params = {'iee_max_merge_cells': 8, 'iee_max_candidates': 5000, 'iee_time_limit_s': 10.}
-    param_labels = {'iee_max_merge_cells': '单个凸合并候选的基本单元上限',
+    label = 'IEE + IP 最小宽度合并'
+    description = '凹点邻边向内延伸至首次边界，按Nielsen算法1平衡组合生成凸候选，用0/1整数规划最小化宽度和；候选近似和预算状态均记录。'
+    default_params = {'iee_max_merge_cells': 0, 'iee_max_candidates': 10000, 'iee_time_limit_s': 10.}
+    param_labels = {'iee_max_merge_cells': '单个凸候选的基本单元上限（0不限制）',
                     'iee_max_candidates': '整数规划候选数量上限', 'iee_time_limit_s': '整数规划时间上限 (s)'}
 
     def partition(self, poly, p):
@@ -380,34 +437,44 @@ class IEEDecomposition(DecompositionMethod):
 
 
 class GreeneDecomposition(DecompositionMethod):
-    label = 'Greene 最少块凸分解（思路）'
-    description = '以最少凸块为目标枚举可见顶点对角线并记忆化递归；非Greene原文多项式实现。预算用尽保留有效解并记录，只有搜索完整才声明最优。'
-    default_params = {'greene_state_budget': 3000}
-    param_labels = {'greene_state_budget': '最少块搜索状态预算'}
+    label = 'Greene 最优凸分解'
+    description = '直接调用CGAL 6.0.1 optimal_convex_partition_2，执行Greene多项式DP；无Steiner顶点，最少凸块；不再使用旧递归状态预算。'
 
     def partition(self, poly, p):
-        return _greene(poly, int(p['greene_state_budget']))
+        from algorithms.cgal_partition import convex_partition
+        parts, info = convex_partition(_ring(poly), optimal=True)
+        return parts, dict(info, objective='minimum_convex_cell_count_without_Steiner_vertices',
+                           minimum_count_proven=True, state_budget_hit=False)
 
 
 class RGSDecomposition(DecompositionMethod):
-    label = 'RGS 递归贪心分解（思路）'
-    description = '多方向尝试，在凹顶点作垂直切分，按宽度和贪心选择并递归。保持任务边界，不使用原文可外扩的凸包替代，也不建模风场。'
-    default_params = {'rgs_rotations': 6}
-    param_labels = {'rgs_rotations': '递归贪心尝试方向数'}
+    label = 'RGS 递归分解（宽度代价）'
+    description = '按Coombes算法1逐凹点切分、递归求解后比较全部候选，并按算法2搜索方向；使用宽度代价且保持原边界，暂不启用外扩凸包或风模型。'
+    default_params = {'rgs_rotations': 6, 'rgs_max_states': 50000}
+    param_labels = {'rgs_rotations': '递归分解尝试方向数', 'rgs_max_states': '递归状态上限（超限明确报错）'}
 
     def partition(self, poly, p):
-        return _rgs(poly, int(p['rgs_rotations']))
+        return _rgs(poly, int(p['rgs_rotations']), int(p['rgs_max_states']))
 
 
 class TDDPDecomposition(DecompositionMethod):
-    label = 'TD + DP 重组（思路）'
-    description = '梯形分解后按扫描坐标排序，以动态规划最少块重组连续、合并后仍凸的单元；仅保证此连续序列约束下最优。'
-    default_params = {'td_angle_deg': 0.}
-    param_labels = {'td_angle_deg': '梯形分解旋转角度 (°)'}
+    label = 'TD + DP 邻接集合重组'
+    description = '局部射线TD后枚举邻接单元集合，使用集合状态自底向上DP最小化宽度和；多方向搜索，记录候选限制；暂不使用外部可选单元或风模型。'
+    default_params = {'td_angle_deg': 0., 'td_rotations': 6,
+                      'tddp_max_subsets': 50000, 'tddp_max_states': 100000}
+    param_labels = {'td_angle_deg': '起始旋转角度 (°)', 'td_rotations': '尝试方向数（1为固定角度）',
+                    'tddp_max_subsets': '邻接子集枚举上限', 'tddp_max_states': 'DP状态上限（超限明确报错）'}
 
     def partition(self, poly, p):
-        cells = _td(poly, float(p['td_angle_deg']))
-        rotated = [affinity.rotate(q, -float(p['td_angle_deg']), origin=(0, 0)) for q in cells]
-        merged = _td_dp(rotated)
-        return [affinity.rotate(q, float(p['td_angle_deg']), origin=(0, 0)) for q in merged], {
-            'atomic_cells': len(cells), 'objective': 'min_convex_cells_in_contiguous_sweep_order'}
+        best, score_best, info_best = None, math.inf, None
+        rotations = int(p['td_rotations'])
+        complete = True
+        for angle in _angles(float(p['td_angle_deg']), rotations):
+            cells = _td(poly, float(angle))
+            parts, info = _td_dp(cells, int(p['tddp_max_subsets']), int(p['tddp_max_states']))
+            complete &= not info['candidate_family_limited']
+            score = sum(_width(q) for q in parts)
+            if best is None or _better(score, len(parts), score_best, len(best)):
+                best, score_best = parts, score
+                info_best = dict(info, rotation_deg=float(angle))
+        return best, dict(info_best, rotation_count=rotations, all_rotation_candidates_complete=complete)

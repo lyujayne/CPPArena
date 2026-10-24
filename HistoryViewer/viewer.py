@@ -25,7 +25,10 @@ def main():
     apply_theme(app)
     window = HistoryWindow()
     if arguments.experiment:
-        window.open_path(arguments.experiment)
+        if arguments.check:
+            window.open_path(arguments.experiment)
+        else:
+            window.request_open(arguments.experiment)
     window.show()
     if arguments.check:
         app.processEvents()

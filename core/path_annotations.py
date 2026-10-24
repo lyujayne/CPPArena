@@ -96,18 +96,25 @@ def subregion_endpoints(run):
 
 def draw_entry_exit(ax, run):
     artists = []
-    for item in subregion_endpoints(run):
-        order = item['order']
-        for key, prefix, color, marker, offset in (
+    endpoints = list(subregion_endpoints(run))
+    if not endpoints:
+        return artists
+    # One marker collection per type avoids thousands of scatter collections
+    # when the history viewer overlays dozens of combinations.
+    for key, prefix, color, marker, offset in (
             ('entry', '入', '#087f5b', 'o', (7, 10)),
             ('exit', '出', '#c2410c', 's', (7, -15))):
+        mark = ax.scatter([item[key][0] for item in endpoints],
+                          [item[key][1] for item in endpoints], marker=marker,
+                          s=40, c=color, edgecolors='white', linewidths=.8, zorder=11)
+        mark.set_gid(key + '-markers')
+        artists.append(mark)
+        for item in endpoints:
+            order = item['order']
             x, y = item[key]
-            mark = ax.scatter([x], [y], marker=marker, s=40, c=color,
-                              edgecolors='white', linewidths=.8, zorder=11)
-            mark.set_gid(f'{key}-{order}')
             text = ax.annotate(f'{prefix}{order}', (x, y), xytext=offset,
                 textcoords='offset points', color=color, fontsize=8, zorder=12,
                 bbox=dict(boxstyle='round,pad=.15', fc='white', ec=color, alpha=.9))
             text.set_gid(f'{key}-label-{order}')
-            artists.extend((mark, text))
+            artists.append(text)
     return artists

@@ -263,7 +263,10 @@ class DecompCompareDialog(QDialog):
         self.metric_table.setHorizontalHeaderLabels(['评价指标'] + [self._display(a) for a in self._algo_names])
         for row, (key, name, unit, direction, fmt) in enumerate(METRIC_DEFS):
             title = QTableWidgetItem(f'{name} ({unit})' if unit else name)
-            title.setToolTip('描述性指标，不作优劣排名' if direction is None else '只在几何有效、相同输入与预算下参考')
+            help_text = ('描述性指标，无统一的越大或越小越好，不作优劣排名' if direction is None else
+                         ('越小越好' if direction == 'down' else '越大越好，最大100%') +
+                         '；只在几何有效、相同输入与预算下参考，不保证完整航程最短。')
+            title.setToolTip(help_text)
             self.metric_table.setItem(row, 0, title)
             candidates = [m[key] for m in values.values() if m.get('valid') and key in m]
             best = (min(candidates) if direction == 'down' else max(candidates)) if candidates and direction else None
@@ -271,6 +274,7 @@ class DecompCompareDialog(QDialog):
                 metrics = values[algo]
                 text = '结果缺失' if not metrics else '无效分割' if not metrics.get('valid') else fmt.format(metrics[key])
                 item = QTableWidgetItem(text)
+                item.setToolTip(help_text)
                 item.setTextAlignment(Qt.AlignCenter)
                 if metrics.get('valid') and best is not None and abs(metrics[key]-best) < 1e-9:
                     item.setBackground(QColor('#d8f1e3'))

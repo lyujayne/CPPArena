@@ -81,6 +81,11 @@ class ExperimentPanel(QWidget):
             self._configuration_controls.append(button)
             actions.addWidget(button)
         body.addLayout(actions)
+        self.btn_all_datasets = QPushButton('统一设置所有组合的数据集')
+        self.btn_all_datasets.setToolTip('将勾选的数据集应用到当前清单的全部组合，覆盖已有的逐行数据集设置。')
+        self.btn_all_datasets.clicked.connect(lambda checked=False: self.edit_datasets())
+        self._configuration_controls.append(self.btn_all_datasets)
+        body.addWidget(self.btn_all_datasets)
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["分割", "规划", "独立参数", "数据集"])
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -164,7 +169,20 @@ class ExperimentPanel(QWidget):
                 item = QTableWidgetItem(text)
                 item.setToolTip(combo.label)
                 self.table.setItem(i, j, item)
-            button = QPushButton("参数设置" + (" •" if combo.decomposition_params or combo.planning_params else ""))
+            changes = []
+            for title, kind, key, values in (
+                    ('分割', 'decomposition', combo.decomposition, combo.decomposition_params),
+                    ('规划', 'planning', combo.planning, combo.planning_params)):
+                for name, label, typ, default in component_spec(kind, key):
+                    value = values.get(name, default)
+                    if value != default:
+                        changes.append(f'{title} · {label}：{default} → {value}')
+            button = QPushButton(f'已修改 {len(changes)} 项' if changes else '默认参数')
+            if changes:
+                button.setToolTip('点击设置此组合参数。与默认方案的差异（默认值 → 当前值）：\n' + '\n'.join(changes))
+                button.setStyleSheet('QPushButton:enabled { color:#92400e; background:#fff7ed; border:1px solid #f59e0b; }')
+            else:
+                button.setToolTip('默认参数：分割与规划参数均与所选模块的默认方案一致。\n点击设置此组合参数。')
             button.clicked.connect(lambda checked=False, c=combo: self.edit_params(c))
             button.setEnabled(not self._running)
             self.table.setCellWidget(i, 2, button)
@@ -191,37 +209,63 @@ class ExperimentPanel(QWidget):
                     checks[key].setText(label.replace('（', '\n（', 1))
                 checks[key].setToolTip(getattr(cls, 'description', ''))
 
-    def edit_datasets(self, combo):
+    def edit_datasets(self, combo=None):
+        bulk = combo is None
+        targets = self.combinations if bulk else [combo]
+        if not targets:
+            QMessageBox.information(self, '组合清单为空', '请先穷举或添加组合，再统一设置数据集。')
+            return
+        selected_ids = targets[0].dataset_ids
+        if bulk and any(c.dataset_ids != selected_ids for c in targets):
+            selected_ids = None
         dialog = QDialog(self)
-        dialog.setWindowTitle(combo.label + ' · 选择数据集')
+        dialog.setWindowTitle('统一设置所有组合的数据集' if bulk else combo.label + ' · 选择数据集')
         dialog.resize(560, 430)
         layout = QVBoxLayout(dialog)
+        if bulk:
+            hint = QLabel(f'应用到当前清单的全部 {len(targets)} 个组合，覆盖已有的逐行数据集设置；应用后仍可逐行调整。')
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
         inherit = QCheckBox('使用全局范围（当前 / 全部数据集）')
-        inherit.setChecked(combo.dataset_ids is None)
+        inherit.setChecked(not bulk and selected_ids is None)
         layout.addWidget(inherit)
         listing = QListWidget()
         for ds in self.datasets:
             item = QListWidgetItem(ds.name)
             item.setData(Qt.UserRole, ds.id)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked if combo.dataset_ids is None or ds.id in combo.dataset_ids else Qt.Unchecked)
+            item.setCheckState(Qt.Checked if selected_ids is None or ds.id in selected_ids else Qt.Unchecked)
             listing.addItem(item)
         listing.setEnabled(not inherit.isChecked())
         inherit.toggled.connect(lambda on: listing.setEnabled(not on))
         layout.addWidget(listing)
+        if bulk:
+            select_all = QCheckBox('全选 / 取消全选')
+            select_all.setChecked(listing.count() > 0 and all(
+                listing.item(i).checkState() == Qt.Checked for i in range(listing.count())))
+            select_all.toggled.connect(lambda on: [listing.item(i).setCheckState(Qt.Checked if on else Qt.Unchecked)
+                                                   for i in range(listing.count())])
+            inherit.toggled.connect(lambda on: select_all.setEnabled(not on))
+            layout.addWidget(select_all)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        if bulk:
+            buttons.button(QDialogButtonBox.Ok).setText('应用到所有组合')
         def accept():
             ids = [listing.item(i).data(Qt.UserRole) for i in range(listing.count()) if listing.item(i).checkState() == Qt.Checked]
             if not inherit.isChecked() and not ids:
                 QMessageBox.warning(dialog, '数据集为空', '请至少选择一个数据集。')
                 return
-            combo.dataset_ids = None if inherit.isChecked() else ids
+            for target in targets:
+                target.dataset_ids = None if inherit.isChecked() else list(ids)
             dialog.accept()
         buttons.accepted.connect(accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         if dialog.exec() == QDialog.Accepted:
             self.refresh_table()
+            if bulk:
+                scope = '全局范围（当前 / 全部数据集）' if inherit.isChecked() else f'{len(targets[0].dataset_ids)} 个数据集'
+                self.status_label.setText(f'已将 {len(targets)} 个组合统一设置为{scope}。')
 
     def add_dialog(self):
         dialog = QDialog(self)
@@ -294,6 +338,7 @@ class ExperimentPanel(QWidget):
                     widget.setDecimals(8)
                 widget.setValue(values.get(name, default))
                 widget.setProperty("defaultValue", default)
+                widget.setToolTip(f'默认值：{default}')
                 form.addRow(label, widget)
                 widgets[(kind, name)] = widget
         scroll = QScrollArea()
@@ -308,8 +353,10 @@ class ExperimentPanel(QWidget):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         if dialog.exec() == QDialog.Accepted:
-            combo.decomposition_params = {k: w.value() for (kind, k), w in widgets.items() if kind == "decomposition"}
-            combo.planning_params = {k: w.value() for (kind, k), w in widgets.items() if kind == "planning"}
+            combo.decomposition_params = {k: w.value() for (kind, k), w in widgets.items()
+                                          if kind == "decomposition" and w.value() != w.property("defaultValue")}
+            combo.planning_params = {k: w.value() for (kind, k), w in widgets.items()
+                                      if kind == "planning" and w.value() != w.property("defaultValue")}
             self.refresh_table()
 
     def seeds(self):

@@ -66,6 +66,10 @@ class Combination:
             raise ValueError("未知分割或规划模块")
         self.decomposition_params = deepcopy(self.decomposition_params)
         self.planning_params = deepcopy(self.planning_params)
+        if self.decomposition == 'Greene':
+            # v2.8's bounded recursive search was replaced by the CGAL DP.
+            # Keep saved combinations loadable without exposing a dead setting.
+            self.decomposition_params.pop('greene_state_budget', None)
         self.dataset_ids = list(dict.fromkeys(self.dataset_ids)) if self.dataset_ids is not None else None
         for kind, key, params in (("decomposition", self.decomposition, self.decomposition_params),
                                   ("planning", self.planning, self.planning_params)):

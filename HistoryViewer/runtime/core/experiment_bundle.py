@@ -12,7 +12,7 @@ from pathlib import Path
 from uuid import uuid4
 from xml.etree import ElementTree as ET
 
-from config.default_params import APP_VERSION
+from config.default_params import APP_VERSION, resolve_versioned_path
 from data.dataset import Dataset
 from data.coord_transform import CoordTransform
 from data.waypoint_export import export_waypoints
@@ -187,12 +187,14 @@ def _write_experiment_files(root, record, progress=None):
                     _plot_run(directory / 'trajectory.jpg', ds, run)
                     _plot_run(directory / 'segmentation.jpg', ds, run, decomposition=True)
                 run['artifacts'] = relative
+                from compare.coverage_metrics import coverage_details
+                coverage = coverage_details(run)
                 metrics.append({'dataset': ds.name, 'combination': label, 'seed': run.get('seed'),
                     'started_at': run.get('started_at'), 'finished_at': run.get('finished_at'),
                     'runtime_s': run.get('runtime'), 'elapsed_total_s': run.get('elapsed_total'),
                     'distance_m': run.get('total_distance'), 'turns': run.get('total_turns'),
-                    'coverage_ratio': ((run.get('metadata') or {}).get('coverage') or {}).get('covered_ratio'),
-                    **{key: ((run.get('metadata') or {}).get('coverage') or {}).get(key)
+                    'coverage_ratio': coverage.get('covered_ratio'),
+                    **{key: coverage.get(key)
                        for key in ('covered_area_m2', 'target_area_m2', 'uncovered_area_m2')},
                     **{key: (run.get('metadata') or {}).get('route_metrics', {}).get(key)
                        for key in ('subregion_transfer_m', 'outside_distance_m', 'redundancy_pct',
@@ -380,7 +382,29 @@ def import_experiment(source, library):
             raise ValueError('实验文件夹含外部链接，请使用实际文件导入')
     elif source.suffix.lower() == '.json':
         record = _validate_record(json.loads(source.read_text(encoding='utf-8')))
-        return export_experiment_directory(library, record, record.get('experiment_name') or record.get('project') or source.stem)
+        # Import the saved snapshot; a full export would regenerate two 400-DPI
+        # figures per successful run on the viewer's GUI thread.
+        library.mkdir(parents=True, exist_ok=True)
+        name = record.get('experiment_name') or record.get('project') or source.stem
+        with _staging_directory(library, '.cpp_import_') as temporary:
+            staged = Path(temporary) / 'experiment'
+            staged.mkdir()
+            (staged / 'assets').mkdir()
+            for index, data in enumerate(record['datasets']):
+                # A standalone viewer can also resolve a renamed source app
+                # beside the legacy JSON, without depending on that app at replay.
+                image = resolve_versioned_path(Dataset.from_dict(data).bg_image_path,
+                                               base_dir=source.parent.parent)
+                if image:
+                    image = Path(image)
+                    if not image.is_absolute():
+                        image = source.parent / image
+                    target = Path('assets') / f'background_{index}{image.suffix.lower()}'
+                    shutil.copy2(image, staged / target)
+                    data['bg_image_path'] = target.as_posix()
+            dump_json(staged / 'experiment.json', record, already_safe=True)
+            load_experiment_directory(staged)
+            return _publish_directory(staged, library, _experiment_stem(name))
     elif source.suffix.lower() not in ('.zip', '.cppx'):
         raise ValueError('请选择完整实验文件夹或 .cppx/.zip/.json 实验记录')
     library.mkdir(parents=True, exist_ok=True)

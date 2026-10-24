@@ -6,7 +6,7 @@ import os
 import sys
 
 APP_NAME = "CPP Arena"
-APP_VERSION = "2.4"
+APP_VERSION = "2.9"
 
 # 项目根目录（cpp_arena/）
 # 打包为 exe（PyInstaller 冻结）后：只读资源在 sys._MEIPASS（临时解压目录），
@@ -21,13 +21,13 @@ BASE_DIR = _base_dir()
 RESOURCE_DIR = getattr(sys, "_MEIPASS", BASE_DIR)
 
 
-def resolve_versioned_path(path):
+def resolve_versioned_path(path, base_dir=None):
     """Rebase existing local assets/projects after the source folder is renamed."""
     if not path or os.path.exists(path):
         return path
     import re
     from pathlib import Path
-    base = Path(BASE_DIR).resolve()
+    base = Path(base_dir or BASE_DIR).resolve()
     source = Path(path)
     for parent in source.parents:
         if (re.fullmatch(r'CPP _Arena_v\d+(?:\.\d+)*', parent.name)

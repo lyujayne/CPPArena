@@ -72,6 +72,9 @@ class ComparePanel(QWidget):
         self.btn_route_image = QPushButton('导出路线图')
         self.btn_route_image.clicked.connect(self.choose_route_images)
         top.addWidget(self.btn_route_image)
+        self.btn_convergence_image = QPushButton('导出收敛曲线')
+        self.btn_convergence_image.clicked.connect(self.choose_convergence_images)
+        top.addWidget(self.btn_convergence_image)
         v.addLayout(top)
         self.failure_label = QPlainTextEdit()
         self.failure_label.setReadOnly(True)
@@ -217,7 +220,8 @@ class ComparePanel(QWidget):
 
     def _set_enabled(self, on: bool):
         for w in (self.btn_latex, self.btn_csv, self.btn_json, self.btn_report,
-                  self.btn_fig, self.btn_wp, self.btn_route_image, self.ds_combo, self.wp_algo_combo, self.baseline_combo):
+                  self.btn_fig, self.btn_wp, self.btn_route_image, self.btn_convergence_image,
+                  self.ds_combo, self.wp_algo_combo, self.baseline_combo):
             w.setEnabled(on)
 
     def _active_runs(self) -> dict:
@@ -313,7 +317,11 @@ class ComparePanel(QWidget):
             for j in range(df.shape[1]):
                 v = df.iat[i, j]
                 if isinstance(v, (int, float)):
-                    text = f"{v:g}" if v == v else "--"   # NaN → --
+                    if str(df.index[i]).startswith('覆盖率') and v == v:
+                        from compare.coverage_metrics import format_coverage
+                        text = format_coverage({'covered_ratio': v / 100})
+                    else:
+                        text = f"{v:g}" if v == v else "--"   # NaN → --
                 else:
                     text = str(v)
                 item = QTableWidgetItem(text)
@@ -347,38 +355,8 @@ class ComparePanel(QWidget):
 
     def _rebuild_convergence(self):
         fig = self.conv_canvas.figure
-        fig.clear()
-        grouped = {}
-        for algo, runs in self._active_runs().items():
-            for run in runs:
-                objective = (run.get("metadata") or {}).get("gtsp", {}).get("objective", "mission_total_distance")
-                curve = np.asarray(run.get("convergence") or [], dtype=float)
-                if curve.size:
-                    grouped.setdefault(objective, {}).setdefault(algo, []).append(curve)
-        if not grouped:
-            ax = fig.add_subplot(111)
-            ax.text(.5, .5, "暂无有效收敛数据", ha="center", va="center", transform=ax.transAxes)
-            ax.set_axis_off()
-        for pos, (objective, curves) in enumerate(grouped.items(), 1):
-            ax = fig.add_subplot(len(grouped), 1, pos)
-            for algo, convs in curves.items():
-                mat = np.full((len(convs), max(map(len, convs))), np.nan)
-                for i, curve in enumerate(convs):
-                    mat[i, :len(curve)] = curve
-                mean, std = np.nanmean(mat, axis=0), np.nanstd(mat, axis=0)
-                x = np.arange(mean.size)
-                line, = ax.plot(x, mean, marker="o" if mean.size == 1 else None,
-                                linewidth=1.6, label=f"{algo} (n={len(convs)})")
-                if len(convs) > 1:
-                    ax.fill_between(x, mean-std, mean+std, color=line.get_color(), alpha=.15)
-            label = ("开放子区连接距离（不含起降/内部）" if objective == "open_inter_region_distance"
-                     else "完整任务距离")
-            ax.set_ylabel(label+" (m)")
-            ax.set_xlabel("迭代编号 / DP结果")
-            ax.set_title(label+"：同目标函数比较")
-            ax.grid(True, alpha=.3)
-            ax.legend(fontsize=8)
-        fig.tight_layout()
+        from compare.convergence import draw_convergence
+        draw_convergence(fig, self._active_runs())
         self.conv_canvas.draw_idle()
         self._conv_fig = fig
 
@@ -558,6 +536,26 @@ class ComparePanel(QWidget):
                 {label: self._best_run(label) for label in labels}, dialog.mode.currentData() == 'overlay')
         except Exception as exc:
             return QMessageBox.warning(self, '路线图导出失败', str(exc))
+        QMessageBox.information(self, '导出完成', f'已导出 {len(paths)} 张高清 JPEG：\n' + '\n'.join(str(p) for p in paths))
+
+    def choose_convergence_images(self):
+        from PySide6.QtWidgets import QDialog
+        from gui.route_export_dialog import RouteExportDialog, export_convergence_images
+        runs = {label: curves for label, values in self._active_runs().items()
+                if (curves := [run for run in values if run.get('convergence')])}
+        if not runs:
+            return QMessageBox.information(self, '提示', '当前数据集没有有效收敛数据。')
+        dialog = RouteExportDialog(list(runs), self.wp_algo_combo.currentData(), self, convergence=True)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        labels = dialog.selected_labels()
+        if not labels or not dialog.directory.text().strip():
+            return QMessageBox.warning(self, '未选择导出内容', '请勾选组合并填写导出目录。')
+        try:
+            paths = export_convergence_images(dialog.directory.text(),
+                {label: runs[label] for label in labels}, dialog.mode.currentData() == 'overlay')
+        except Exception as exc:
+            return QMessageBox.warning(self, '收敛曲线导出失败', str(exc))
         QMessageBox.information(self, '导出完成', f'已导出 {len(paths)} 张高清 JPEG：\n' + '\n'.join(str(p) for p in paths))
 
     def generate_report(self):

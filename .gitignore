@@ -51,3 +51,6 @@ data/samples/*.kml
 *.tmp
 *.bak
 ~$*
+
+# PyPI distribution archives
+/pypi-dist/

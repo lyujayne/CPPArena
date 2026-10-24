@@ -70,7 +70,8 @@ def build_comparison_table(runs_by_algo: Dict[str, List[dict]],
         turns = [r.get("total_turns") for r in runs]
         runtimes = [r.get("runtime") for r in runs]
         rows['有效运行次数'][algo] = len(runs)
-        coverage = [(r.get('metadata') or {}).get('coverage', {}) for r in runs]
+        from compare.coverage_metrics import coverage_details
+        coverage = [coverage_details(r) for r in runs]
         ratios = [c['covered_ratio'] for c in coverage if c.get('covered_ratio') is not None]
         missed = [c['uncovered_area_m2'] for c in coverage if c.get('uncovered_area_m2') is not None]
         if ratios:

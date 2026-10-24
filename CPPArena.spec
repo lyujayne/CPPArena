@@ -4,7 +4,7 @@
 构建：
     E:\\anaconda\\python.exe -m PyInstaller --clean --noconfirm CPPArena.spec
 产物：
-    dist\\CPPArena.exe
+    dist\\CPPArena-v2.9.exe
 """
 from PyInstaller.utils.hooks import collect_all
 
@@ -35,8 +35,16 @@ hiddenimports += [
 # 应用资源与示例数据
 datas += [
     ("assets", "assets"),
-    ("data/samples", "data/samples"),
+    ("data/samples/示例农田.kml", "data/samples"),
+    ("LICENSE", "."),
+    ("NOTICE", "."),
+    ("algorithms/native/README.md", "algorithms/native"),
+    ("algorithms/native/LICENSE.GPL", "algorithms/native"),
+    ("algorithms/native/LICENSE.LGPL", "algorithms/native"),
+    ("algorithms/native/LICENSE_1_0.txt", "algorithms/native"),
+    ("algorithms/native/CGAL-LICENSE.txt", "algorithms/native"),
 ]
+binaries += [("algorithms/native/arena_partition.dll", "algorithms/native")]
 
 a = Analysis(
     ["main.py"],
@@ -52,7 +60,7 @@ a = Analysis(
         "notebook", "jupyter", "sphinx",
         # 本项目不使用的重型环境包（Anaconda 自带，排除以避免钩子崩溃/体积膨胀）
         "torch", "torchvision", "torchaudio",
-        "sklearn", "scipy", "sympy", "numba", "llvmlite",
+        "sklearn", "sympy", "numba", "llvmlite",
         # pandas/可视化库的可选依赖，本程序不使用；避免导入额外JIT和云存储工具。
         "datashader", "holoviews", "hvplot", "panel", "bokeh", "plotly",
         "cv2", "skimage", "dask", "distributed", "xarray",
@@ -70,7 +78,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="CPPArena-v2.4",
+    name="CPPArena-v2.9",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

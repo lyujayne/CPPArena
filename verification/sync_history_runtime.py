@@ -10,7 +10,8 @@ standalone = source.parent / 'HistoryViewer'
 seed = packaged if (packaged / 'viewer.py').is_file() else standalone
 if not (seed / 'viewer.py').is_file():
     raise FileNotFoundError('The standalone HistoryViewer source is missing')
-for name in ('viewer.py', 'start.bat', 'requirements.txt', 'README.md', 'runtime/gui/history_window.py'):
+for name in ('viewer.py', 'start.bat', 'requirements.txt', 'README.md', 'runtime/gui/history_window.py',
+             'runtime/gui/history_loading.py', 'runtime/gui/history_canvas.py', 'runtime/gui/history_compare.py'):
     for deployment in [packaged] + ([standalone] if (standalone / 'viewer.py').is_file() else []):
         destination = deployment / name
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -22,7 +23,7 @@ files = ['gui/__init__.py', 'gui/theme.py', 'gui/path_canvas.py', 'gui/result_pa
          'core/__init__.py', 'core/base_algorithm.py', 'core/experiment_bundle.py', 'core/path_annotations.py',
          'data/__init__.py', 'data/dataset.py', 'data/kml_handler.py', 'data/coord_transform.py', 'data/waypoint_export.py',
          'config/__init__.py', 'config/default_params.py', 'compare/__init__.py', 'compare/metrics.py',
-         'compare/statistics.py', 'compare/report_gen.py']
+         'compare/statistics.py', 'compare/report_gen.py', 'compare/convergence.py']
 targets = [packaged] + ([standalone] if (standalone / 'viewer.py').is_file() else [])
 for viewer in targets:
     target = viewer / 'runtime'

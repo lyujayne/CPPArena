@@ -1,0 +1,22 @@
+CPP Arena is distributed under the GNU General Public License, version 3 or
+(at your option) any later version (SPDX: GPL-3.0-or-later). See LICENSE.
+
+Third-party components retain their original copyright and license notices:
+
+- CGAL 6.0.1: the Partition_2 algorithms use GPL-3.0-or-later (with a separate
+  commercial licensing option); other CGAL components include LGPL-3.0-or-later
+  code. See algorithms/native/CGAL-LICENSE.txt, LICENSE.GPL, and LICENSE.LGPL.
+- Boost 1.86.0: Boost Software License 1.0. See
+  algorithms/native/LICENSE_1_0.txt.
+- The native wrapper and its build instructions, exact reference versions,
+  header package URLs, and checksums are in algorithms/native/.
+
+The Python algorithms cite their reference papers and implementations in their
+source files, README.md, and PAPER_ALIGNMENT.md. In particular the FA3ACO
+reference is https://github.com/wu457120325/FA3ACO at commit
+b9579cc203d1b0588f79a6391bee834c05a06f2e. That reference repository is not bundled
+in this distribution; no license grant is made on behalf of its authors.
+
+Source and pip installations obtain Python dependencies separately. The Windows
+EXE bundles its required Python runtime and dependencies; these components retain
+their respective licenses and copyright notices.

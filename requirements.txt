@@ -1,4 +1,5 @@
 # CPP Arena 依赖（Python 3.8+，推荐 3.10+）
+# HM/Greene使用随源码提供的Windows x64 CGAL DLL，无需pip安装CGAL；重建见algorithms/native/README.md。
 # GUI
 PySide6>=6.5
 # 几何计算 / 坐标转换

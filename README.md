@@ -1,28 +1,46 @@
-# CPP Arena v2.4
+# CPP Arena v2.9
+
+Windows x64 可在 [GitHub Releases v2.9](https://github.com/lyujayne/CPPArena/releases/tag/v2.9) 下载，无需安装 Python 即可运行主程序。
+
+- [下载独立 EXE](https://github.com/lyujayne/CPPArena/releases/download/v2.9/CPPArena-v2.9.exe)：放在可写文件夹中，双击启动。
+- [下载便携包 ZIP](https://github.com/lyujayne/CPPArena/releases/download/v2.9/CPPArena-v2.9-windows-x64.zip)：完整解压后启动同名 EXE，附带历史平台源码、说明与许可证。
+- 发布页提供 SHA256 校验文件及对应源码，可从页面的 Source code 下载本次代码。
+
+已发布到 [PyPI cpp-arena 2.9](https://pypi.org/project/cpp-arena/2.9/)，可执行 `python -m pip install cpp-arena` 后使用 `cpp-arena` 启动；支持 Windows x64、64 位 Python 3.10+。发布记录及构建步骤见 [PUBLISH_PYPI.md](PUBLISH_PYPI.md)。项目整体采用 [GPL-3.0-or-later](LICENSE)，第三方声明见 [NOTICE](NOTICE)。
 
 无人机覆盖路径规划算法比较平台：多边形导入、区域分割、牛耕扫描、区域间连接、路径显示、实验记录及航点导出。
 
-**当前为 v2.4 源码版，本次没有重新打包 exe。请使用 `CPP _Arena_v2.4/start.bat` 或 `python main.py` 启动；现有 `dist` 中 exe 不包含此次升级。**
-本轮修复失败组合显示、固定滚动区域、运行中列表滚动以及大规模完整导出。导出在后台和独立进程中执行，可查看进度并取消；详见 [UPGRADE_v2.4.md](UPGRADE_v2.4.md)。
-本轮新增6种分割和4种规划算法，总计9种分割×7种规划，可自由组成63种组合。实现范围、论文来源和预算说明见 [UPGRADE_v2.3.md](UPGRADE_v2.3.md)。新模块初始未勾选，可自行勾选或“添加组合”，每行独立配置参数。
-v2.2覆盖率定义、指标解释、命名文件夹导出及历史平台升级见 [UPGRADE_v2.2.md](UPGRADE_v2.2.md)。完整导出会要求填写实验名，自动保存到历史平台默认实验库。
+**当前发布版本为 v2.9，提供 Windows x64 单文件 EXE、便携包和源码。仅发布现有版本，不另增版本号。**
+本轮更新六种分割：TD改为局部首次边界射线和多方向搜索；HM与Greene直接使用CGAL 6.0.1参考实现；IEE采用首次边界射线、论文平衡候选及最小宽度IP；RGS逐候选递归比较；TD-DP采用邻接集合重组与宽度目标。暂不添加有风时间、凸包外扩或外部可选单元。实现范围、未对齐部分、参数和验证见 [v2.9实现报告](UPGRADE_v2.9.md)。
+v2.8改进组合参数方案显示：默认方案显示“默认参数”，修改后显示“已修改N项”，悬停列出分割/规划参数的“默认值→当前值”；恢复默认后清除修改标记。
+v2.7新增“统一设置所有组合的数据集”：在实验页一次勾选多个数据集并应用到当前清单的全部组合，支持全选、恢复全局范围及后续逐行调整。
+v2.6修复 IEE-MILP 扫描凸性误判、统一无漏扫覆盖率尾数，新增勾选组合的收敛曲线 JPEG 导出及指标优劣方向说明。
+v2.5修复历史平台导入大规模 JSON 实验时无响应的问题：直接保存原始快照和底图，不再自动重生成全部高清图片；恢复保存的视图后再绘制结果，批量绘制入口/出口标记。
+v2.4修复失败组合显示、固定滚动区域、运行中列表滚动以及大规模完整导出。导出在后台和独立进程中执行，可查看进度并取消。
+本轮新增6种分割和4种规划算法，总计9种分割×7种规划，可自由组成63种组合。实现范围和预算说明见 [v2.9实现报告](UPGRADE_v2.9.md)。新模块初始未勾选，可自行勾选或“添加组合”，每行独立配置参数。
+v2.2引入覆盖率定义、命名文件夹导出及历史平台升级。完整导出会要求填写实验名，自动保存到历史平台默认实验库。
 新增/修正内容见 [FOLLOWUP_FIXES.md](FOLLOWUP_FIXES.md)。仓库附带可单独复制运行的 [HistoryViewer](HistoryViewer/README.md)；本机现有独立部署仍保留在上级同名英文目录。
-本次14项界面、导出、数据集及新增模块改进见 [WORKFLOW_v2.1.md](WORKFLOW_v2.1.md)，含相关指标解释。
-本轮17项比较评价、JPEG批量导出、动态日志及分解对比改进见 [REVIEW_v2.1.md](REVIEW_v2.1.md)，其中新增指标已按您的最终确认添加。
+历次界面、数据集、指标、JPEG批量导出与动态日志更新见 [CHANGELOG.md](CHANGELOG.md)。
 
 2026-10-18版本依据三篇论文重新核对并修改代码。**可确认的原文内容、实现假设与无法严格复现的部分见 [PAPER_ALIGNMENT.md](PAPER_ALIGNMENT.md)**。不将工程改动统称为完整复刻。
 
-v2.1按 `UPGRADE_PLAN_v1.8.md` 的 FR-1～FR-10 升级，历史说明及验收记录见 [UPGRADE_v2.1.md](UPGRADE_v2.1.md)。按用户最新要求，源码根目录的版本名随当前交付版本同步。
+源码根目录的版本名随当前交付版本同步。
 
 ## 后续版本规则
 
-每完成一轮程序更新或修复，递增一个小版本：**2.1 → 2.2 → 2.3 → 2.4…**。同一轮多项改动使用同一个版本号，同步更新版本信息、更新日志及源码文件夹名。仅登记规则、查询状态或推送已有更新不另增版本；当前为2.4，下一轮程序更新为2.5。
+每完成一轮程序更新或修复，递增一个小版本：**2.1 → 2.2 → 2.3 → 2.4 → 2.5…**。同一轮多项改动使用同一个版本号，同步更新版本信息、更新日志及源码文件夹名。仅登记规则、查询状态或推送已有更新不另增版本；当前为2.9，后续按同一规则递增。
 
-当前源码位置：`E:\workspace\fly\CPP Arena\CPP _Arena_v2.4`，默认图片目录随之为其下的`pictures`。数据集库和原有本地资料随源码目录保留；底图及最近工程支持从同级旧版本路径定位到新目录。独立历史实验库仍为同级`HistoryViewer/experiments`。
+仅历史实验显示平台的优化与修复不递增实验主平台版本，也不改变源码根目录的版本名（2026-10-20确认）。
+
+当前源码位置：`E:\workspace\fly\CPP Arena\CPP _Arena_v2.9`，默认图片目录随之为其下的`pictures`。数据集库和原有本地资料随源码目录保留；底图及最近工程支持从同级旧版本路径定位到新目录。独立历史实验库仍为同级`HistoryViewer/experiments`。
 
 ## 启动
 
-Windows 本次请从源码启动。`dist/CPPArena-v2.1.exe` 是上一次打包版本，保留原样；未重新构建或发布。
+Windows x64 推荐使用发布页的 `CPPArena-v2.9.exe`。首次启动需要解压内嵌运行环境，可能比后续启动稍慢；请选择有写入权限的目录。
+
+EXE 的数据集库、工程、自动实验记录、图片和设置保存在 EXE 所在目录下的 `dataset_library`、`projects`、`experiments`、`pictures` 和 `settings.json`。升级时将新 EXE 放到原来的数据目录，或先复制这些目录；不要把尚未解压的 ZIP 当作运行目录。
+
+便携包中的 `HistoryViewer` 是可独立运行的 Python 历史平台，仍需按其 `requirements.txt` 安装 Python 依赖，再运行 `HistoryViewer/start.bat`；主程序 EXE 不需要这些依赖。历史平台的默认实验库为其下的 `experiments`，可导入旧实验文件夹或 JSON。
 
 从源码启动：
 
@@ -32,26 +50,26 @@ Windows 本次请从源码启动。`dist/CPPArena-v2.1.exe` 是上一次打包�
 python main.py
 ```
 
-启动脚本优先使用 `E:\anaconda\python.exe`。依赖见 `requirements.txt`；运行测试另需 `pytest`。
+启动脚本优先使用 `E:\anaconda\python.exe`。依赖见 `requirements.txt`。
 
 ## 使用
 
 1. 导入 KML 支持一次选择多个文件；数据集与底图自动保存到本程序 `dataset_library`，下次启动自动恢复。后台自动加载卫星底图；通过“显示背景图”控制显隐。离线或下载失败时，日志显示原因，地块仍可使用。
 2. 手动勾绘时设置画布中心经纬度与范围（米），按坐标轴与实时边长勾绘；已有尺度错误可用“尺寸校准”。
 3. 为各数据集标记起飞点，设置相机参数、航高及重叠率。
-4. 在“实验”页分别勾选分割与规划模块，点击“穷举组合”。可以添加、删除组合，每行“参数设置”仅作用于该行。
-5. 每行“数据集”可独立选择该组合的输入；未单独选择的行沿用当前/全部数据集范围。设置随机种子并运行，右侧实验日志显示迭代、完成与错误。
+4. 在“实验”页分别勾选分割与规划模块，点击“穷举组合”。可以添加、删除组合。每行参数按钮显示“默认参数”或“已修改N项”，悬停查看默认值与当前值的差异；修改仅作用于该行。
+5. “统一设置所有组合的数据集”可将一次勾选应用到当前全部组合；每行“数据集”也可独立选择该组合的输入；未单独选择的行沿用当前/全部数据集范围。设置随机种子并运行，右侧实验日志显示迭代、完成与错误。
 6. 画布选择组合/种子或叠加显示，查看分割、轨迹、访问顺序、绿圆入口与橙方出口；实线为区内扫描，虚线为起降和转场。点击“比较分析”在独立界面查看表格、收敛曲线和统计图。
 7. 点击“完整导出实验”，填写实验名称，保存为“时间_实验名称”文件夹，包含KML、原始几何、全部已产生的结果、指标、日期/耗时、JPEG图片、相机/算法参数、日志及底图。默认直接存入历史平台的 `experiments` 实验库。
 8. 历史平台已从主程序剥离。双击 `HistoryViewer/start.bat` 后自动显示默认库中的实验文件夹；外部实验用“导入实验文件夹”复制入库，旧 `.cppx/.zip/.json` 用“导入旧实验包”。本机上级目录的独立部署与仓库副本共享默认库；整份平台复制到其他位置后可独立运行。
-9. “导出路线图”可选择组合；比较分析里也可用“数据集/结果组合”选择导出目标。图片默认保存到本程序 `pictures`。多种子时导出该组合航程最短的有效结果。
+9. “导出路线图”和“导出收敛曲线”支持勾选组合分别导出、叠加导出及一键全部导出，采用高清JPEG；比较分析里可用“数据集/结果组合”选择导出目标。图片默认保存到本程序 `pictures`。路线图在多种子时使用该组合航程最短的有效结果；收敛图汇总全部有效曲线的均值与标准差，不同目标分图。
 10. “新增分割方法 / 新增路径规划算法”支持导入独立 Python 实现，或先另存接口模板；安装后的模块可与已有模块自由组合。
 
 旧工程可加载。含原始几何和相机快照的v2.1实验包/JSON仍可导入，来源版本保留；更早的记录若缺少输入快照，无法补齐完整回放。跨电脑复盘请复制整个v2.2实验文件夹。
 
 ## 算法
 
-实验模块可自由组合三种分割（Bayazit、PSO-DCAS、Enhanced-ECD）与三种规划（ACO、FA3ACO、DP），共 9 种组合。DP 默认通用转场，参数 `li_adjacency_mode=1` 使用严格论文邻接约束；通用模式是工程扩展。下表记录论文组合来源。
+实验模块可自由组合9种分割与7种规划，共63种组合。下表记录原有三种分割与三种规划的论文组合来源；新增六种分割的当前范围见 [v2.9实现报告](UPGRADE_v2.9.md)。DP默认通用转场，参数 `li_adjacency_mode=1` 使用严格论文邻接约束；通用模式是工程扩展。
 
 | 选项 | 分割 | 区域间连接 |
 | --- | --- | --- |
@@ -88,15 +106,7 @@ v1.7.2修复计算期间窗口卡顿及PSO进度停留问题：界面通过独�
 默认大算例仍可能需要数分钟，进度持续更新时表示正在计算。
 详情见 [PERFORMANCE.md](PERFORMANCE.md)。修改代码后需退出旧进程并重新启动。
 
-```powershell
-python -m pytest test_paper_alignment.py -q
-python -m pytest test_responsiveness.py -q
-python -m pytest test_upgrade_v21.py -q
-python test_li_dp.py
-python test_fa3aco.py
-```
-
-独立测试覆盖几何完整性、边界漏扫、交替方向、邻接DP穷举、完整3-opt邻域、参数与随机复现。论文对齐细节和未解决的原文歧义见 [PAPER_ALIGNMENT.md](PAPER_ALIGNMENT.md)。
+已按用户要求移除各版本测试用例、验证脚本、测试输出及测试缓存，保留程序源码和实际实验记录。`verification/sync_history_runtime.py` 为独立历史平台的运行库同步工具，继续保留。历史升级说明中的验证结果为当时的执行记录。论文对齐细节和未解决的原文歧义见 [PAPER_ALIGNMENT.md](PAPER_ALIGNMENT.md)。
 
 ## 主要文件
 
@@ -114,3 +124,13 @@ python test_fa3aco.py
 - Kato et al. (2025), *A method for planning multirotor Unmanned aerial vehicle flight paths to cover areas using the Ant Colony Optimization metaheuristic*, Computers and Electronics in Agriculture 231:109983。
 - Li et al. (2011), *Coverage path planning for UAVs based on enhanced exact cellular decomposition method*, Mechatronics 21:876–885, DOI 10.1016/j.mechatronics.2010.10.009。
 - Wu et al. (2025), *An efficient coverage path planning method for UAV in complex concave regions*, Scientific Reports 15:37227, DOI 10.1038/s41598-025-20978-8。作者代码：[FA3ACO](https://github.com/wu457120325/FA3ACO)，核对commit为 `b9579cc203d1b0588f79a6391bee834c05a06f2e`。
+
+## 构建 Windows EXE
+
+在 Windows x64、已安装 `requirements.txt` 依赖和 PyInstaller 的 Python 环境中执行：
+
+```powershell
+python -m PyInstaller --noconfirm CPPArena.spec
+```
+
+产物为 `dist/CPPArena-v2.9.exe`。构建配置包含 CGAL 原生DLL、投影数据和程序资源，示例只收录仓库自带KML；不收录本机数据集库、工程或实验记录。原生库源码、固定参考版本及重建步骤见 [algorithms/native/README.md](algorithms/native/README.md)。

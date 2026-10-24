@@ -38,6 +38,15 @@ class ResultPanel(QWidget):
         form.addRow('覆盖率', self.lbl_coverage)
         form.addRow('未覆盖面积 (m²)', self.lbl_uncovered)
         form.addRow("优化目标", self.lbl_objective)
+        for field, text in (
+                (self.lbl_dist, '覆盖率满足要求时，完整飞行距离越小越好。'),
+                (self.lbl_turns, '覆盖率满足要求时，航向拐点数通常越小越好；不是能耗的直接测量。'),
+                (self.lbl_runtime, '相同硬件、输入与参数预算下，耗时越小越好。'),
+                (self.lbl_coverage, '覆盖率越大越好，最大100%。'),
+                (self.lbl_uncovered, '未覆盖面积越小越好，理想值为0。'),
+                (self.lbl_objective, '当前优化目标为距离，越小越好；不同目标的数值不直接比较。')):
+            field.setToolTip(text)
+            form.labelForField(field).setToolTip(text)
         v.addWidget(g)
         self.lbl_note = QLabel('')
         self.lbl_note.setWordWrap(True)
@@ -95,7 +104,8 @@ class ResultPanel(QWidget):
         self.lbl_order.setText(" → ".join(str(i) for i in order) if order else "--")
 
         meta = run.get("metadata") or {}
-        coverage = meta.get("coverage", {})
+        from compare.coverage_metrics import coverage_details
+        coverage = coverage_details(run)
         notes = [coverage.get('warning', ''), meta.get('gtsp', {}).get('paper_extension', '')]
         self.lbl_note.setText('\n'.join(note for note in notes if note))
         self.lbl_note.setVisible(bool(self.lbl_note.text()))
@@ -103,7 +113,7 @@ class ResultPanel(QWidget):
         self.lbl_coverage.setText(format_coverage(coverage))
         self.lbl_coverage.setToolTip(coverage_tooltip(coverage))
         self.lbl_uncovered.setText(format_area(coverage.get('uncovered_area_m2')))
-        self.lbl_uncovered.setToolTip('0表示当前相机参数与连续扫描模型下无漏扫，不代表路线最优。非零小数不会四舍五入成0。')
+        self.lbl_uncovered.setToolTip('越小越好，理想值为0。0表示当前相机参数与连续扫描模型下无漏扫，不代表路线最优。非零小数不会四舍五入成0。')
         objective = meta.get("gtsp", {}).get("objective")
         self.lbl_objective.setText("开放子区连接距离（不含起降和内部扫描）"
             if objective == "open_inter_region_distance" else "完整任务距离")

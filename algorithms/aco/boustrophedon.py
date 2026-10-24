@@ -14,7 +14,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 from shapely.geometry import Polygon, LineString
 from shapely.ops import unary_union
-from algorithms.aco.polygon_decomp import clean_ring, ensure_ccw, reflex_indices
+from algorithms.aco.polygon_decomp import clean_ring, ensure_ccw
 
 XY = Tuple[float, float]
 
@@ -89,12 +89,17 @@ def _strip_segments(poly_pts: List[XY], sweep_dir, line_spacing: float, boundary
     if not math.isfinite(line_spacing) or line_spacing <= 1e-9:
         raise ValueError("航线间距必须大于 0（请检查相机参数与旁向重叠率）")
     poly_pts = ensure_ccw(clean_ring(poly_pts))
-    poly = Polygon(poly_pts)
-    if not poly.is_valid or poly.area <= 1e-12 or reflex_indices(poly_pts):
-        raise ValueError("牛耕扫描要求有效、非退化的凸多边形，请先完成凸分解")
     # 平移到局部原点，降低 UTM 大坐标造成的投影误差。
     origin = np.asarray(poly_pts[0], dtype=float)
     pts = np.asarray(poly_pts, dtype=float) - origin
+    poly = Polygon(pts)
+    # 与新增分割模块的归一化凸性容差一致。IEE 的共线交点在恢复 UTM
+    # 坐标后会有纳米级偏移，不能再用固定叉积阈值将其判作真实凹角。
+    extent = float(np.ptp(pts, axis=0).max())
+    convex_tolerance = max(extent**2 * 1e-13, poly.area * 1e-10)
+    if (not poly.is_valid or poly.area <= 1e-12
+            or poly.convex_hull.area - poly.area > convex_tolerance):
+        raise ValueError("牛耕扫描要求有效、非退化的凸多边形，请先完成凸分解")
     d = _unit(sweep_dir)
     normal = np.array([-d[1], d[0]])
     proj = pts @ normal
